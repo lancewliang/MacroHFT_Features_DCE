@@ -24,10 +24,27 @@ DATA_TYPE_LEVEL5 = "五档行情数据"  # 五档行情数据
 DATA_TYPE_VOLUME = "期货成交量统计"  # 期货成交量统计
 DATA_TYPE_ORDER = "十笔最优价位委托"  # 十笔最优价位委托
 
+# ==================== 品种主力合约月份配置 ====================
+# 各品种的主力合约月份（根据交易所规则配置）
+MAIN_CONTRACT_MONTHS = {
+    "豆粕": [1, 5, 9],      # 豆粕主力月份：1月、5月、9月
+    "m": [1, 5, 9],         # 豆粕代码别名
+    "豆油": [1, 5, 9],      # 豆油主力月份：1月、5月、9月
+    "y": [1, 5, 9],         # 豆油代码别名
+    "玉米": [1, 5, 9],      # 玉米主力月份：1月、5月、9月
+    "c": [1, 5, 9],         # 玉米代码别名
+    "豆一": [1, 3, 5, 7, 9, 11],  # 豆一主力月份
+    "a": [1, 3, 5, 7, 9, 11],     # 豆一代码别名
+    "豆二": [1, 3, 5, 7, 9, 11],  # 豆二主力月份
+    "b": [1, 3, 5, 7, 9, 11],     # 豆二代码别名
+    "棕榈油": [1, 5, 9],    # 棕榈油主力月份
+    "p": [1, 5, 9],         # 棕榈油代码别名
+}
+
 # ==================== 交易对配置 ====================
 # 主力合约配置
 USE_MAIN_CONTRACT = True  # 是否自动识别主力合约
-MAIN_CONTRACT_CRITERIA = "OpenInterest"  # 主力合约判断标准: "OpenInterest" 或 "Volume"
+MAIN_CONTRACT_CRITERIA = "config"  # 主力合约判断标准: "config"(配置文件)
 DEFAULT_CONTRACT = None  # 默认合约（如果设置为None，则自动识别主力合约）
 TIMEFRAME = "1m"  # 时间粒度
 
@@ -227,7 +244,7 @@ def get_dce_filepath(date_str: str, contract: str = None,
 
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD' (例: '2023-01-03')
-        contract: 合约代码 (例: 'm2301')，如果为None则需要使用get_main_contract获取
+        contract: 合约代码 (例: 'm2301')，如果为None则需要使用get_main_contracts获取
         data_type: 数据类型 (默认: '五档行情数据')
         commodity: 品种名称 (默认: 从配置读取)
 
@@ -250,7 +267,7 @@ def get_dce_filepath(date_str: str, contract: str = None,
         raise ValueError(f"日期格式错误，应为 'YYYY-MM-DD': {date_str}") from e
 
     if contract is None:
-        raise ValueError("合约代码不能为None，请先调用get_main_contract获取主力合约")
+        raise ValueError("合约代码不能为None，请先调用get_main_contracts获取主力合约")
 
     # 构建目录路径: data/豆粕/2023/01/20230103/五档行情数据
     dir_path = DCE_BASE_PATH / commodity / year / month / year_month_day / data_type
@@ -301,24 +318,21 @@ def get_available_contracts(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
     return sorted(contracts)
 
 
-def get_main_contract(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
+def get_main_contracts(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
                      commodity: str = COMMODITY,
-                     criteria: str = MAIN_CONTRACT_CRITERIA) -> str:
+                     volume_threshold: float = 0.5
+                    ) -> list:
     """
-    获取指定日期的主力合约
-
-    主力合约判断标准：
-    - OpenInterest: 持仓量最大的合约
-    - Volume: 成交量最大的合约
-
+    获取指定日期的主力合约列表
+   
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD'
         data_type: 数据类型
         commodity: 品种名称
-        criteria: 判断标准 ("OpenInterest" 或 "Volume")
+        volume_threshold: 成交量阈值，成交量达到最大成交量该比例的合约都视为主力合约 (默认: 0.8)
 
     Returns:
-        str: 主力合约代码 (例: 'm2301')
+        list: 主力合约代码列表 (例: ['m2301', 'm2305'])
 
     Raises:
         ValueError: 如果没有找到可用合约或无法读取数据
@@ -327,54 +341,83 @@ def get_main_contract(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
 
     # 获取所有可用合约
     contracts = get_available_contracts(date_str, data_type, commodity)
-
+    
     if not contracts:
-        raise ValueError(f"日期 {date_str} 没有找到可用的合约")
-
-    # 如果只有一个合约，直接返回
-    if len(contracts) == 1:
-        return contracts[0]
-
-    # 读取每个合约的数据，找到持仓量或成交量最大的
-    max_value = -1
-    main_contract = None
-
+        raise ValueError(f"日期 {date_str} 没有找到可用合约")
+    
+    # 获取品种的主力月份配置
+    main_months = MAIN_CONTRACT_MONTHS.get(commodity, [])
+    if not main_months:
+        # 如果没有配置，使用品种代码别名
+        symbol = SYMBOL if commodity == COMMODITY else commodity
+        main_months = MAIN_CONTRACT_MONTHS.get(symbol, [])
+    
+    if not main_months:
+        raise ValueError(f"品种 {commodity} 没有配置主力月份")
+    
+    # 筛选符合主力月份的合约
+    main_month_contracts = []
     for contract in contracts:
-        try:
-            filepath = get_dce_filepath(date_str, contract, data_type, commodity)
-            if not filepath.exists():
+        if len(contract) >= 4:
+            # 提取合约月份（最后两位数字）
+            try:
+                month = int(contract[-2:])
+                if month in main_months:
+                    main_month_contracts.append(contract)
+            except ValueError:
                 continue
-
-            # 读取CSV，只取第一行数据来判断
-            df = pl.read_csv(filepath, n_rows=100)
-
-            # 根据标准选择列
-            if criteria == "OpenInterest" and "OpenInterest" in df.columns:
-                value = df["OpenInterest"].max()
-            elif criteria == "Volume" and "Volume" in df.columns:
-                value = df["Volume"].max()
-            else:
-                # 如果指定的列不存在，尝试另一个
-                if "OpenInterest" in df.columns:
-                    value = df["OpenInterest"].max()
-                elif "Volume" in df.columns:
-                    value = df["Volume"].max()
+    
+    if not main_month_contracts:
+        raise ValueError(f"日期 {date_str} 没有找到符合主力月份的合约")
+    
+    # 收集所有合约的成交量信息
+    contract_volumes = {}
+    
+    for contract in main_month_contracts:
+        try:
+            # 读取合约数据
+            filepath = get_dce_filepath(date_str, contract, data_type, commodity)
+            if filepath.exists():
+                df = pl.read_csv(filepath)
+                
+                # 计算当日总成交量
+                if "Volume" in df.columns:
+                    total_volume = df["Volume"].max() - df["Volume"].min()
+                elif "volume" in df.columns:
+                    total_volume = df["volume"].max() - df["volume"].min()
                 else:
-                    continue
-
-            if value is not None and value > max_value:
-                max_value = value
-                main_contract = contract
-
+                    # 如果没有成交量字段，使用持仓量变化
+                    if "OpenInterest" in df.columns:
+                        total_volume = df["OpenInterest"].max() - df["OpenInterest"].min()
+                    else:
+                        total_volume = 0
+                
+                contract_volumes[contract] = total_volume
         except Exception as e:
-            # 如果读取某个合约失败，跳过
+            # 如果某个合约读取失败，记录为0成交量
+            contract_volumes[contract] = 0
             continue
-
-    if main_contract is None:
-        # 如果无法通过数据判断，返回第一个合约
-        return contracts[0]
-
-    return main_contract
+    
+    if not contract_volumes:
+        raise ValueError(f"无法读取日期 {date_str} 的任何合约数据")
+    
+    # 找到最大成交量
+    max_volume = max(contract_volumes.values())
+    
+    if max_volume == 0:
+        raise ValueError(f"日期 {date_str} 的所有合约成交量都为0")
+    
+    # 根据阈值确定主力合约列表
+    main_contracts = []
+    for contract, volume in contract_volumes.items():
+        if volume >= max_volume * volume_threshold:
+            main_contracts.append(contract)
+    
+    # 按成交量降序排序
+    main_contracts.sort(key=lambda x: contract_volumes[x], reverse=True)
+    
+    return main_contracts
+ 
 
 
 def get_output_filepath(date_str: str = None, month_str: str = None,
@@ -461,8 +504,21 @@ if __name__ == "__main__":
 
     # 测试获取主力合约
     if contracts:
-        main_contract = get_main_contract(test_date, DATA_TYPE_LEVEL5)
-        print(f"\n主力合约: {main_contract}")
+        # 显示主力月份配置
+        main_months = MAIN_CONTRACT_MONTHS.get(COMMODITY)
+        print(f"\n{COMMODITY} 主力月份配置: {main_months}")
+
+        # 筛选符合主力月份的合约
+        main_month_contracts = []
+        for contract in contracts:
+            if len(contract) >= 4:
+                month = int(contract[-2:])
+                if month in main_months:
+                    main_month_contracts.append(contract)
+        print(f"符合主力月份的合约: {main_month_contracts}")
+
+        main_contract = get_main_contracts(test_date, DATA_TYPE_LEVEL5)
+        print(f"\n识别的主力合约: {main_contract}")
 
         print(f"\n测试合约: {main_contract}")
         print(f"五档行情文件: {get_dce_filepath(test_date, main_contract, DATA_TYPE_LEVEL5)}")

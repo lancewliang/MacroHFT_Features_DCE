@@ -26,7 +26,7 @@ from config import (
 )
 from data_loader import (
     load_date_range_data,
-    pivot_bookdepth,
+     
     preprocess_kline,
     merge_data,
     validate_data,
@@ -89,23 +89,25 @@ def process_batch(
     try:
         # 1. 加载数据
         logger.info("步骤 1/5: 加载原始数据")
-        bookdepth_df, kline_df = load_date_range_data(start_date, end_date)
+        dce_df = load_date_range_data(start_date, end_date)
 
-        if bookdepth_df is None or kline_df is None:
+        if dce_df is None:
             logger.error("数据加载失败")
             return False
 
-        # 2. 转换订单簿格式
-        logger.info("步骤 2/5: 转换订单簿格式")
-        bookdepth_wide = pivot_bookdepth(bookdepth_df)
+        # 2. 预处理DCE数据
+        logger.info("步骤 2/5: 预处理DCE数据")
+        from data_loader import preprocess_dce_data
+        processed_df = preprocess_dce_data(dce_df)
 
         # 3. 预处理K线数据
         logger.info("步骤 3/5: 预处理K线数据")
-        kline_processed = preprocess_kline(kline_df)
+        from data_loader import preprocess_kline
+        kline_processed = preprocess_kline(processed_df)
 
-        # 4. 合并数据
-        logger.info("步骤 4/5: 合并订单簿和K线数据")
-        merged_df = merge_data(bookdepth_wide, kline_processed)
+        # 4. 合并数据（这里实际上不需要合并，因为预处理后的数据已经包含订单簿和K线数据）
+        logger.info("步骤 4/5: 准备数据")
+        merged_df = kline_processed
 
         # 数据验证
         if ENABLE_DATA_VALIDATION:
@@ -144,64 +146,7 @@ def process_batch(
         logger.error(f"处理批次时发生错误: {str(e)}", exc_info=True)
         return False
 
-
-def generate_features_by_month(
-    start_date: str,
-    end_date: str
-) -> int:
-    """
-    按月生成特征数据
-
-    Args:
-        start_date: 起始日期 'YYYY-MM-DD'
-        end_date: 结束日期 'YYYY-MM-DD'
-
-    Returns:
-        成功处理的月份数
-    """
-    logger = logging.getLogger(__name__)
-    logger.info("使用按月策略生成特征")
-
-    # 解析日期
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
-
-    # 生成月份列表
-    months = []
-    current = start.replace(day=1)  # 月初
-    while current < end:
-        next_month = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
-        months.append((
-            current.strftime("%Y-%m-%d"),
-            min(next_month, end).strftime("%Y-%m-%d"),
-            current.strftime("%Y%m")
-        ))
-        current = next_month
-
-    logger.info(f"总共需要处理 {len(months)} 个月")
-
-    # 处理每个月
-    success_count = 0
-    for i, (month_start, month_end, month_str) in enumerate(months, 1):
-        logger.info(f"\n处理月份 {i}/{len(months)}: {month_str}")
-
-        output_path = get_output_filepath(month_str=month_str)
-
-        # 检查文件是否已存在
-        if output_path.exists():
-            logger.warning(f"输出文件已存在: {output_path}")
-            response = input("是否覆盖？(y/n): ")
-            if response.lower() != 'y':
-                logger.info("跳过此月份")
-                continue
-
-        # 处理批次
-        if process_batch(month_start, month_end, output_path):
-            success_count += 1
-        else:
-            logger.error(f"处理月份 {month_str} 失败")
-
-    return success_count
+ 
 
 
 def generate_features_single_file(
@@ -247,11 +192,9 @@ def generate_features_single_file(
 
             if bookdepth_df is None or kline_df is None:
                 logger.warning(f"批次 {batch_num} 数据加载失败，跳过")
-                continue
-
-            bookdepth_wide = pivot_bookdepth(bookdepth_df)
+                continue 
             kline_processed = preprocess_kline(kline_df)
-            merged_df = merge_data(bookdepth_wide, kline_processed)
+            merged_df = merge_data(bookdepth_df, kline_processed)
             features_df = calculate_all_features(merged_df)
 
             # 删除包含 nan 值的行（由周期性因子导致）
@@ -301,7 +244,7 @@ def main():
     parser.add_argument('--end-date', type=str, default=END_DATE,
                         help=f'结束日期 (默认: {END_DATE})')
     parser.add_argument('--strategy', type=str, default=OUTPUT_STRATEGY,
-                        choices=['single', 'monthly'],
+                        choices=['single'],
                         help=f'输出策略 (默认: {OUTPUT_STRATEGY})')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE_DAYS,
                         help=f'批处理大小（天数） (默认: {BATCH_SIZE_DAYS})')
@@ -337,19 +280,16 @@ def main():
 
     # 根据策略执行
     try:
-        if args.strategy == "monthly":
-            success_count = generate_features_by_month(args.start_date, args.end_date)
-            logger.info(f"\n成功处理 {success_count} 个月的数据")
+         
+        success = generate_features_single_file(
+            args.start_date,
+            args.end_date,
+            args.batch_size
+        )
+        if success:
+            logger.info("\n单文件生成成功")
         else:
-            success = generate_features_single_file(
-                args.start_date,
-                args.end_date,
-                args.batch_size
-            )
-            if success:
-                logger.info("\n单文件生成成功")
-            else:
-                logger.error("\n单文件生成失败")
+            logger.error("\n单文件生成失败")
 
     except Exception as e:
         logger.error(f"执行过程中发生错误: {str(e)}", exc_info=True)

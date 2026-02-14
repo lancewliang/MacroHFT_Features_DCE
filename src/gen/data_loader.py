@@ -9,17 +9,32 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 import logging
 
-from config import (
-    get_dce_filepath,
-    get_available_contracts,
-    get_main_contract,
-    DEFAULT_CONTRACT,
-    USE_MAIN_CONTRACT,
-    DATA_TYPE_LEVEL5,
-    DCE_RENAME_MAP,
-    DCE_KEEP_ORIGINAL,
-    SHOW_PROGRESS
-)
+try:
+    # 尝试相对导入（当作为包导入时）
+    from .config import (
+        get_dce_filepath,
+        get_available_contracts,
+        get_main_contracts,
+        DEFAULT_CONTRACT,
+        USE_MAIN_CONTRACT,
+        DATA_TYPE_LEVEL5,
+        DCE_RENAME_MAP,
+        DCE_KEEP_ORIGINAL,
+        SHOW_PROGRESS
+    )
+except ImportError:
+    # 回退到绝对导入（当直接运行时）
+    from config import (
+        get_dce_filepath,
+        get_available_contracts,
+        get_main_contracts,
+        DEFAULT_CONTRACT,
+        USE_MAIN_CONTRACT,
+        DATA_TYPE_LEVEL5,
+        DCE_RENAME_MAP,
+        DCE_KEEP_ORIGINAL,
+        SHOW_PROGRESS
+    )
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -55,6 +70,7 @@ def load_daily_dce_data(date_str: str, contract: str = None) -> Optional[pl.Data
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD'
         contract: 合约代码，例如 'm2301'。如果为None且USE_MAIN_CONTRACT=True，则自动识别主力合约
+                  如果传入合约列表，则加载并合并所有合约的数据
 
     Returns:
         Polars DataFrame 或 None（如果文件不存在）
@@ -66,47 +82,87 @@ def load_daily_dce_data(date_str: str, contract: str = None) -> Optional[pl.Data
         - bid1_size ~ bid5_size: 买方五档数量
         - ask1_price ~ ask5_price: 卖方五档价格
         - ask1_size ~ ask5_size: 卖方五档数量
+        - contract: 合约代码（当合并多个合约时）
         - 其他原始字段...
     """
-    # 如果合约为None，自动识别主力合约
+    contracts_to_load = []
+    
+    # 确定要加载的合约列表
     if contract is None:
         if USE_MAIN_CONTRACT:
             try:
-                contract = get_main_contract(date_str, DATA_TYPE_LEVEL5)
-                logger.info(f"日期 {date_str} 识别到主力合约: {contract}")
+                contracts_to_load = get_main_contracts(date_str, DATA_TYPE_LEVEL5)
+                if not contracts_to_load:
+                    logger.error(f"日期 {date_str} 未找到主力合约")
+                    return None
+                logger.info(f"日期 {date_str} 识别到主力合约: {contracts_to_load}")
             except ValueError as e:
                 logger.error(f"无法识别主力合约: {str(e)}")
                 return None
         elif DEFAULT_CONTRACT is not None:
-            contract = DEFAULT_CONTRACT
-            logger.info(f"使用默认合约: {contract}")
+            contracts_to_load = [DEFAULT_CONTRACT]
+            logger.info(f"使用默认合约: {DEFAULT_CONTRACT}")
         else:
             logger.error("未指定合约代码，且未配置默认合约")
             return None
-
-    csv_path = get_dce_filepath(date_str, contract, DATA_TYPE_LEVEL5)
-
-    if not csv_path.exists():
-        logger.warning(f"DCE数据文件不存在: {csv_path}")
+    elif isinstance(contract, str):
+        contracts_to_load = [contract]
+    elif isinstance(contract, list):
+        contracts_to_load = contract
+    else:
+        logger.error(f"不支持的合约参数类型: {type(contract)}")
         return None
 
-    try:
-        # 读取CSV文件
-        df = pl.read_csv(csv_path)
+    # 加载并合并所有合约的数据
+    all_dfs = []
+    
+    for contract_code in contracts_to_load:
+        csv_path = get_dce_filepath(date_str, contract_code, DATA_TYPE_LEVEL5)
 
-        # 检查必要的列是否存在
-        required_cols = ["TradingDay", "UpdateTime"]
-        missing_cols = [col for col in required_cols if col not in df.columns]
-        if missing_cols:
-            logger.error(f"缺少必要列 {missing_cols}: {csv_path}")
-            return None
+        if not csv_path.exists():
+            logger.warning(f"DCE数据文件不存在: {csv_path}")
+            continue
 
-        logger.debug(f"成功加载DCE数据: {date_str}, 合约: {contract}, 行数: {len(df)}")
-        return df
+        try:
+            # 读取CSV文件
+            df = pl.read_csv(csv_path)
 
-    except Exception as e:
-        logger.error(f"读取DCE数据失败 {date_str}, 合约 {contract}: {str(e)}")
+            # 检查必要的列是否存在
+            required_cols = ["TradingDay", "UpdateTime"]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                logger.warning(f"合约 {contract_code} 缺少必要列 {missing_cols}: {csv_path}")
+                continue
+
+            # 添加合约代码列
+            df = df.with_columns(pl.lit(contract_code).alias("contract"))
+            
+            # 添加合约月份列（提取合约代码中的月份部分，只保留月份数字1-12）
+            # 合约格式如：m2301 -> 月份为1，i2405 -> 月份为5
+            month_str = contract_code[1:]  # 去掉品种代码，保留月份部分
+            month_num = int(month_str[-2:])  # 提取最后两位作为月份数字
+            df = df.with_columns(pl.lit(month_num).alias("contract_month"))
+            
+            all_dfs.append(df)
+            logger.debug(f"成功加载合约数据: {date_str}, 合约: {contract_code}, 行数: {len(df)}")
+
+        except Exception as e:
+            logger.error(f"读取合约数据失败 {date_str}, 合约 {contract_code}: {str(e)}")
+            continue
+
+    if not all_dfs:
+        logger.error(f"日期 {date_str} 所有合约数据加载失败")
         return None
+
+    # 合并所有合约的数据
+    if len(all_dfs) == 1:
+        result_df = all_dfs[0]
+    else:
+        # 使用 concat 合并多个DataFrame
+        result_df = pl.concat(all_dfs)
+        logger.info(f"成功合并 {len(all_dfs)} 个合约的数据，总行数: {len(result_df)}")
+
+    return result_df
 
 
 def load_date_range_data(
@@ -233,7 +289,7 @@ def preprocess_dce_data(df: pl.DataFrame) -> pl.DataFrame:
 
     # 3. 选择需要的列
     # 基础列
-    base_columns = ["timestamp"]
+    base_columns = ["timestamp","contract_month"]
 
     # K线价格列（已重命名）
     kline_columns = ["open_price", "high_price", "low_price", "close_price"]
@@ -331,6 +387,22 @@ def validate_data(df: pl.DataFrame) -> bool:
 
         if null_count > 0:
             logger.warning(f"数据中存在 {null_count} 个空值")
+            
+            # 打印各列的空值数量
+            for col, count in total_nulls_dict.items():
+                if count > 0:
+                    logger.warning(f"  列 '{col}': {count} 个空值")
+            
+            # 查找包含空值的具体行
+            null_rows = df.filter(pl.any_horizontal(pl.all().is_null()))
+            if len(null_rows) > 0:
+                logger.warning(f"发现 {len(null_rows)} 行包含空值:")
+                # 只显示前10行，避免日志过长
+                for i, row in enumerate(null_rows.head(10).iter_rows(named=True)):
+                    null_cols = [col for col, val in row.items() if val is None]
+                    logger.warning(f"  第{i+1}行: 列 {null_cols} 包含空值")
+                if len(null_rows) > 10:
+                    logger.warning(f"  ... 还有 {len(null_rows) - 10} 行包含空值")
             # 不直接失败，因为某些列可能允许空值
     else:
         logger.warning("数据为空，跳过验证")

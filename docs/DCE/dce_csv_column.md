@@ -1,5 +1,5 @@
 # DCE 原始数据列说明
-
+五档行情数据
 | 列号 | 字段名 | 描述 |
 |------|--------|------|
 | 1 | ActionDay | 交易日 |
@@ -59,3 +59,38 @@
 | 55 | LowerLimitPrice | 跌停板 |
 | 56 | LifeHighPrice | 历史最高价 |
 | 57 | LifeLowPrice | 历史最低价 |
+
+
+期货成交量统计
+
+| 列号 | 字段名 | 描述 |
+|------|--------|------|
+| 1 | ActionDay | 交易日 |
+| 2 | TradingDay | 结算日 |
+| 3 | UpdateTime | 交易时间 |
+| 4 | InstrumentID | 合约代码 |
+| 5 | Price1 | 价格 1，成交量第一大的价位区间。将涨跌停板范围按照 3*tick 划分成多个子区间，根据区间内基本定单产生的成交量降序排列，价格为区间的下限。 |
+| 6 | BuyOpenVol1 | 买开数量 1，[价格 N，价格 N+2*tick]价格区间内的买开委托的成交量 |
+| 7 | BuyCloseVol1 | 买平数量 1，[价格 N，价格 N+2*tick]价格区间内的买平委托的成交量 |
+| 8 | SellOpenVol1 | 卖开数量 1，[价格 N，价格 N+2*tick]价格区间内的卖开委托的成交量 |
+| 9 | SellCloseVol1 | 卖平数量 1，[价格 N，价格 N+2*tick]价格区间内的卖平委托的成交量 |
+| 10 | Price2 | 价格 2 |
+| 11 | BuyOpenVol2 | 买开数量 2 |
+| 12 | BuyCloseVol2 | 买平数量 2 |
+| 13 | SellOpenVol2 | 卖开数量 2 |
+| 14 | SellCloseVol2 | 卖平数量 2 |
+| 15 | Price3 | 价格 3 |
+| 16 | BuyOpenVol3 | 买开数量 3 |
+| 17 | BuyCloseVol3 | 买平数量 3 |
+| 18 | SellOpenVol3 | 卖开数量 3 |
+| 19 | SellCloseVol3 | 卖平数量 3 |
+| 20 | Price4 | 价格 4 |
+| 21 | BuyOpenVol4 | 买开数量 4 |
+| 22 | BuyCloseVol4 | 买平数量 4 |
+| 23 | SellOpenVol4 | 卖开数量 4 |
+| 24 | SellCloseVol4 | 卖平数量 4 |
+| 25 | Price5 | 价格 5 |
+| 26 | BuyOpenVol5 | 买开数量 5 |
+| 27 | BuyCloseVol5 | 买平数量 5 |
+| 28 | SellOpenVol5 | 卖开数量 5 |
+| 29 | SellCloseVol5 | 卖平数量 5 |
