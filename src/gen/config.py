@@ -12,29 +12,34 @@ DATA_ROOT = PROJECT_ROOT / "data"
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 
 # ==================== 数据源配置 ====================
-# 订单簿数据路径
-BOOKDEPTH_BASE_PATH = DATA_ROOT / "futures" / "um" / "daily" / "bookDepth" / "ETHUSDT"
+# DCE数据基础路径
+DCE_BASE_PATH = DATA_ROOT
 
-# K线数据路径
-KLINE_BASE_PATH = DATA_ROOT / "futures" / "um" / "daily" / "klines" / "ETHUSDT" / "1m"
+# 品种配置
+COMMODITY = "豆粕"  # 品种名称（中文）
+SYMBOL = "m"  # 品种代码（豆粕）
 
-# 示例数据路径（用于测试）
-EXAMPLE_DATA_PATH = PROJECT_ROOT / "biance_example"
+# 数据类型
+DATA_TYPE_LEVEL5 = "五档行情数据"  # 五档行情数据
+DATA_TYPE_VOLUME = "期货成交量统计"  # 期货成交量统计
+DATA_TYPE_ORDER = "十笔最优价位委托"  # 十笔最优价位委托
 
 # ==================== 交易对配置 ====================
-SYMBOL = "ETHUSDT"
-TIMEFRAME = "1m"
+# 主力合约配置
+USE_MAIN_CONTRACT = True  # 是否自动识别主力合约
+MAIN_CONTRACT_CRITERIA = "OpenInterest"  # 主力合约判断标准: "OpenInterest" 或 "Volume"
+DEFAULT_CONTRACT = None  # 默认合约（如果设置为None，则自动识别主力合约）
+TIMEFRAME = "1m"  # 时间粒度
 
 # ==================== 数据时间范围配置 ====================
-START_DATE = "2023-01-01"
-END_DATE = "2026-01-01"
+START_DATE = "2023-09-01"
+END_DATE = "2023-09-30"
 
 # ==================== 文件命名模板 ====================
-# 订单簿文件名模板：ETHUSDT-bookDepth-2023-06-30.zip
-BOOKDEPTH_FILENAME_TEMPLATE = "{symbol}-bookDepth-{date}.zip"
-
-# K线文件名模板：ETHUSDT-1m-2023-06-30.zip
-KLINE_FILENAME_TEMPLATE = "{symbol}-{timeframe}-{date}.zip"
+# DCE数据目录结构: data/豆粕/2023/01/20230103/五档行情数据/m2301.csv
+# 路径模板: {base_path}/{commodity}/{year}/{month}/{YYYYMMDD}/{data_type}/{contract}.csv
+DCE_DIR_TEMPLATE = "{commodity}/{year}/{month}/{year_month_day}/{data_type}"
+DCE_FILENAME_TEMPLATE = "{contract}.csv"
 
 # ==================== 输出配置 ====================
 # 输出目录
@@ -68,21 +73,63 @@ LEVEL_NAMES = {
     1: "ask1", 2: "ask2", 3: "ask3", 4: "ask4", 5: "ask5"
 }
 
-# ==================== K线数据列配置 ====================
-KLINE_COLUMNS = [
-    "open_time", "open", "high", "low", "close", "volume",
-    "close_time", "quote_volume", "count",
-    "taker_buy_volume", "taker_buy_quote_volume", "ignore"
+# ==================== DCE五档行情数据列配置 ====================
+# DCE五档行情原始列名
+DCE_LEVEL5_COLUMNS = [
+    "ActionDay", "TradingDay", "UpdateTime", "InstrumentID",
+    "LastPrice", "HighPrice", "LowPrice", "OpenPrice", "ClosePrice",
+    "LastVolume", "Volume", "Turnover", "OpenInterest", "PreOpenInterest",
+    "OpenInteChange", "AveragePrice", "SettlementPrice", "PreSettlementPrice", "PreClosePrice",
+    "BuyVolume", "SellVolume", "AvgBuyPrice", "AvgSellPrice",
+    "BidPrice1", "BidVolume1", "DerBidVolume1",
+    "BidPrice2", "BidVolume2", "DerBidVolume2",
+    "BidPrice3", "BidVolume3", "DerBidVolume3",
+    "BidPrice4", "BidVolume4", "DerBidVolume4",
+    "BidPrice5", "BidVolume5", "DerBidVolume5",
+    "AskPrice1", "AskVolume1", "DerAskVolume1",
+    "AskPrice2", "AskVolume2", "DerAskVolume2",
+    "AskPrice3", "AskVolume3", "DerAskVolume3",
+    "AskPrice4", "AskVolume4", "DerAskVolume4",
+    "AskPrice5", "AskVolume5", "DerAskVolume5",
+    "UpperLimitPrice", "LowerLimitPrice", "LifeHighPrice", "LifeLowPrice"
 ]
 
-# 重命名映射
-KLINE_RENAME_MAP = {
-    "open": "open_price",
-    "high": "high_price",
-    "low": "low_price",
-    "close": "close_price",
-    "volume": "traded_volume"
+# DCE字段重命名映射 (原始字段名 -> 目标字段名)
+DCE_RENAME_MAP = {
+    # K线价格字段
+    "OpenPrice": "open_price",
+    "HighPrice": "high_price",
+    "LowPrice": "low_price",
+    "ClosePrice": "close_price",
+    # 买方五档
+    "BidPrice1": "bid1_price",
+    "BidVolume1": "bid1_size",
+    "BidPrice2": "bid2_price",
+    "BidVolume2": "bid2_size",
+    "BidPrice3": "bid3_price",
+    "BidVolume3": "bid3_size",
+    "BidPrice4": "bid4_price",
+    "BidVolume4": "bid4_size",
+    "BidPrice5": "bid5_price",
+    "BidVolume5": "bid5_size",
+    # 卖方五档
+    "AskPrice1": "ask1_price",
+    "AskVolume1": "ask1_size",
+    "AskPrice2": "ask2_price",
+    "AskVolume2": "ask2_size",
+    "AskPrice3": "ask3_price",
+    "AskVolume3": "ask3_size",
+    "AskPrice4": "ask4_price",
+    "AskVolume4": "ask4_size",
+    "AskPrice5": "ask5_price",
+    "AskVolume5": "ask5_size",
 }
+
+# 保留的原始字段（用于调试或其他用途）
+DCE_KEEP_ORIGINAL = [
+    "TradingDay", "UpdateTime", "InstrumentID",
+    "Volume", "Turnover", "OpenInterest"
+]
 
 # ==================== 因子配置 ====================
 # K线特征因子列表
@@ -172,39 +219,162 @@ SAVE_INTERMEDIATE = False
 INTERMEDIATE_DIR = OUTPUT_ROOT / "intermediate"
 
 # ==================== 辅助函数 ====================
-def get_bookdepth_filepath(date_str: str) -> Path:
+def get_dce_filepath(date_str: str, contract: str = None,
+                     data_type: str = DATA_TYPE_LEVEL5,
+                     commodity: str = COMMODITY) -> Path:
     """
-    获取订单簿数据文件路径
+    获取DCE数据文件路径
 
     Args:
-        date_str: 日期字符串，格式 'YYYY-MM-DD'
+        date_str: 日期字符串，格式 'YYYY-MM-DD' (例: '2023-01-03')
+        contract: 合约代码 (例: 'm2301')，如果为None则需要使用get_main_contract获取
+        data_type: 数据类型 (默认: '五档行情数据')
+        commodity: 品种名称 (默认: 从配置读取)
 
     Returns:
         Path: 完整文件路径
+        例: data/豆粕/2023/01/20230103/五档行情数据/m2301.csv
+
+    Raises:
+        ValueError: 如果日期格式不正确或合约为None
     """
-    filename = BOOKDEPTH_FILENAME_TEMPLATE.format(
-        symbol=SYMBOL,
-        date=date_str
-    )
-    return BOOKDEPTH_BASE_PATH / filename
+    from datetime import datetime
+
+    try:
+        # 解析日期
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        year = date_obj.strftime("%Y")  # 2023
+        month = date_obj.strftime("%m")  # 01
+        year_month_day = date_obj.strftime("%Y%m%d")  # 20230103
+    except ValueError as e:
+        raise ValueError(f"日期格式错误，应为 'YYYY-MM-DD': {date_str}") from e
+
+    if contract is None:
+        raise ValueError("合约代码不能为None，请先调用get_main_contract获取主力合约")
+
+    # 构建目录路径: data/豆粕/2023/01/20230103/五档行情数据
+    dir_path = DCE_BASE_PATH / commodity / year / month / year_month_day / data_type
+
+    # 构建完整文件路径
+    filename = DCE_FILENAME_TEMPLATE.format(contract=contract)
+    filepath = dir_path / filename
+
+    return filepath
 
 
-def get_kline_filepath(date_str: str) -> Path:
+def get_available_contracts(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
+                           commodity: str = COMMODITY) -> list:
     """
-    获取K线数据文件路径
+    获取指定日期可用的合约列表
 
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD'
+        data_type: 数据类型
+        commodity: 品种名称
 
     Returns:
-        Path: 完整文件路径
+        list: 可用的合约代码列表
     """
-    filename = KLINE_FILENAME_TEMPLATE.format(
-        symbol=SYMBOL,
-        timeframe=TIMEFRAME,
-        date=date_str
-    )
-    return KLINE_BASE_PATH / filename
+    from datetime import datetime
+
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        year = date_obj.strftime("%Y")  # 2023
+        month = date_obj.strftime("%m")  # 01
+        year_month_day = date_obj.strftime("%Y%m%d")  # 20230103
+    except ValueError:
+        return []
+
+    # 构建目录路径: data/豆粕/2023/01/20230103/五档行情数据
+    dir_path = DCE_BASE_PATH / commodity / year / month / year_month_day / data_type
+
+    # 检查目录是否存在
+    if not dir_path.exists():
+        return []
+
+    # 获取所有CSV文件
+    csv_files = list(dir_path.glob("*.csv"))
+
+    # 提取合约代码（去掉.csv后缀）
+    contracts = [f.stem for f in csv_files]
+
+    return sorted(contracts)
+
+
+def get_main_contract(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
+                     commodity: str = COMMODITY,
+                     criteria: str = MAIN_CONTRACT_CRITERIA) -> str:
+    """
+    获取指定日期的主力合约
+
+    主力合约判断标准：
+    - OpenInterest: 持仓量最大的合约
+    - Volume: 成交量最大的合约
+
+    Args:
+        date_str: 日期字符串，格式 'YYYY-MM-DD'
+        data_type: 数据类型
+        commodity: 品种名称
+        criteria: 判断标准 ("OpenInterest" 或 "Volume")
+
+    Returns:
+        str: 主力合约代码 (例: 'm2301')
+
+    Raises:
+        ValueError: 如果没有找到可用合约或无法读取数据
+    """
+    import polars as pl
+
+    # 获取所有可用合约
+    contracts = get_available_contracts(date_str, data_type, commodity)
+
+    if not contracts:
+        raise ValueError(f"日期 {date_str} 没有找到可用的合约")
+
+    # 如果只有一个合约，直接返回
+    if len(contracts) == 1:
+        return contracts[0]
+
+    # 读取每个合约的数据，找到持仓量或成交量最大的
+    max_value = -1
+    main_contract = None
+
+    for contract in contracts:
+        try:
+            filepath = get_dce_filepath(date_str, contract, data_type, commodity)
+            if not filepath.exists():
+                continue
+
+            # 读取CSV，只取第一行数据来判断
+            df = pl.read_csv(filepath, n_rows=100)
+
+            # 根据标准选择列
+            if criteria == "OpenInterest" and "OpenInterest" in df.columns:
+                value = df["OpenInterest"].max()
+            elif criteria == "Volume" and "Volume" in df.columns:
+                value = df["Volume"].max()
+            else:
+                # 如果指定的列不存在，尝试另一个
+                if "OpenInterest" in df.columns:
+                    value = df["OpenInterest"].max()
+                elif "Volume" in df.columns:
+                    value = df["Volume"].max()
+                else:
+                    continue
+
+            if value is not None and value > max_value:
+                max_value = value
+                main_contract = contract
+
+        except Exception as e:
+            # 如果读取某个合约失败，跳过
+            continue
+
+    if main_contract is None:
+        # 如果无法通过数据判断，返回第一个合约
+        return contracts[0]
+
+    return main_contract
 
 
 def get_output_filepath(date_str: str = None, month_str: str = None,
@@ -217,6 +387,8 @@ def get_output_filepath(date_str: str = None, month_str: str = None,
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD' (用于单文件输出)
         month_str: 月份字符串，格式 'YYYYMM' (用于按月输出)
+        start_date: 起始日期 'YYYY-MM-DD'
+        end_date: 结束日期 'YYYY-MM-DD'
 
     Returns:
         Path: 输出文件路径
@@ -225,10 +397,15 @@ def get_output_filepath(date_str: str = None, month_str: str = None,
 
     if OUTPUT_STRATEGY == "monthly" and month_str:
         filename = f"features_{month_str}.{OUTPUT_FORMAT}"
+    elif month_str:
+        filename = f"features_{month_str}.{OUTPUT_FORMAT}"
     elif date_str:
         filename = f"features_{date_str.replace('-', '')}.{OUTPUT_FORMAT}"
-    else:
+    elif start_date and end_date:
         filename = f"features_{start_date.replace('-', '')}_{end_date.replace('-', '')}.{OUTPUT_FORMAT}"
+    else:
+        # 默认文件名
+        filename = f"features.{OUTPUT_FORMAT}"
 
     return FEATURES_OUTPUT_DIR / filename
 
@@ -260,9 +437,12 @@ if __name__ == "__main__":
     print(f"项目根目录: {PROJECT_ROOT}")
     print(f"数据根目录: {DATA_ROOT}")
     print(f"输出根目录: {OUTPUT_ROOT}")
-    print(f"\n订单簿数据路径: {BOOKDEPTH_BASE_PATH}")
-    print(f"K线数据路径: {KLINE_BASE_PATH}")
-    print(f"\n交易对: {SYMBOL}")
+    print(f"\nDCE数据路径: {DCE_BASE_PATH}")
+    print(f"品种: {COMMODITY} ({SYMBOL})")
+    print(f"数据类型: {DATA_TYPE_LEVEL5}, {DATA_TYPE_VOLUME}, {DATA_TYPE_ORDER}")
+    print(f"\n主力合约配置:")
+    print(f"  自动识别: {USE_MAIN_CONTRACT}")
+    print(f"  判断标准: {MAIN_CONTRACT_CRITERIA}")
     print(f"时间范围: {START_DATE} 至 {END_DATE}")
     print(f"\n输出策略: {OUTPUT_STRATEGY}")
     print(f"输出格式: {OUTPUT_FORMAT}")
@@ -271,8 +451,21 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # 测试路径生成
-    test_date = "2023-06-30"
+    test_date = "2023-01-03"
     print(f"\n测试日期: {test_date}")
-    print(f"订单簿文件: {get_bookdepth_filepath(test_date)}")
-    print(f"K线文件: {get_kline_filepath(test_date)}")
-    print(f"输出文件: {get_output_filepath(month_str='202306')}")
+
+    # 测试获取可用合约
+    print(f"\n可用合约列表:")
+    contracts = get_available_contracts(test_date, DATA_TYPE_LEVEL5)
+    print(f"  {contracts}")
+
+    # 测试获取主力合约
+    if contracts:
+        main_contract = get_main_contract(test_date, DATA_TYPE_LEVEL5)
+        print(f"\n主力合约: {main_contract}")
+
+        print(f"\n测试合约: {main_contract}")
+        print(f"五档行情文件: {get_dce_filepath(test_date, main_contract, DATA_TYPE_LEVEL5)}")
+        print(f"输出文件: {get_output_filepath(month_str='202301')}")
+    else:
+        print(f"警告: 日期 {test_date} 没有找到可用合约")

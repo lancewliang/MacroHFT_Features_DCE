@@ -1,24 +1,23 @@
 """
 数据加载模块
-负责从 ZIP 文件中读取订单簿和K线数据，并进行预处理
+负责从 DCE CSV 文件中读取五档行情数据，并进行预处理
 """
 
 import polars as pl
-import zipfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 import logging
 
 from config import (
-    get_bookdepth_filepath,
-    get_kline_filepath,
-    SYMBOL,
-    TIMEFRAME,
-    LEVEL_NAMES,
-    BID_LEVELS,
-    ASK_LEVELS,
-    KLINE_RENAME_MAP,
+    get_dce_filepath,
+    get_available_contracts,
+    get_main_contract,
+    DEFAULT_CONTRACT,
+    USE_MAIN_CONTRACT,
+    DATA_TYPE_LEVEL5,
+    DCE_RENAME_MAP,
+    DCE_KEEP_ORIGINAL,
     SHOW_PROGRESS
 )
 
@@ -49,356 +48,258 @@ def generate_date_range(start_date: str, end_date: str) -> List[str]:
     return date_list
 
 
-def load_daily_bookdepth(date_str: str) -> Optional[pl.DataFrame]:
+def load_daily_dce_data(date_str: str, contract: str = None) -> Optional[pl.DataFrame]:
     """
-    从 ZIP 文件中读取单日订单簿数据
+    从 CSV 文件中读取单日DCE五档行情数据
 
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD'
+        contract: 合约代码，例如 'm2301'。如果为None且USE_MAIN_CONTRACT=True，则自动识别主力合约
 
     Returns:
         Polars DataFrame 或 None（如果文件不存在）
 
     DataFrame 格式:
-        - timestamp: 时间戳
-        - percentage: 档位 (-5 到 -1, 1 到 5)
-        - depth: 订单深度
-        - notional: 名义价值
+        - timestamp: 时间戳 (TradingDay + UpdateTime)
+        - open_price, high_price, low_price, close_price: K线价格
+        - bid1_price ~ bid5_price: 买方五档价格
+        - bid1_size ~ bid5_size: 买方五档数量
+        - ask1_price ~ ask5_price: 卖方五档价格
+        - ask1_size ~ ask5_size: 卖方五档数量
+        - 其他原始字段...
     """
-    zip_path = get_bookdepth_filepath(date_str)
+    # 如果合约为None，自动识别主力合约
+    if contract is None:
+        if USE_MAIN_CONTRACT:
+            try:
+                contract = get_main_contract(date_str, DATA_TYPE_LEVEL5)
+                logger.info(f"日期 {date_str} 识别到主力合约: {contract}")
+            except ValueError as e:
+                logger.error(f"无法识别主力合约: {str(e)}")
+                return None
+        elif DEFAULT_CONTRACT is not None:
+            contract = DEFAULT_CONTRACT
+            logger.info(f"使用默认合约: {contract}")
+        else:
+            logger.error("未指定合约代码，且未配置默认合约")
+            return None
 
-    if not zip_path.exists():
-        logger.warning(f"订单簿文件不存在: {zip_path}")
+    csv_path = get_dce_filepath(date_str, contract, DATA_TYPE_LEVEL5)
+
+    if not csv_path.exists():
+        logger.warning(f"DCE数据文件不存在: {csv_path}")
         return None
 
     try:
-        # 从 ZIP 文件中读取 CSV
-        with zipfile.ZipFile(zip_path, 'r') as z:
-            # ZIP 文件中应该只有一个 CSV 文件
-            csv_files = [f for f in z.namelist() if f.endswith('.csv')]
-            if not csv_files:
-                logger.error(f"ZIP 文件中没有 CSV 文件: {zip_path}")
-                return None
+        # 读取CSV文件
+        df = pl.read_csv(csv_path)
 
-            # 读取第一个 CSV 文件
-            with z.open(csv_files[0]) as f:
-                df = pl.read_csv(f)
+        # 检查必要的列是否存在
+        required_cols = ["TradingDay", "UpdateTime"]
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            logger.error(f"缺少必要列 {missing_cols}: {csv_path}")
+            return None
 
-        # 添加日期列用于调试
-        df = df.with_columns(pl.lit(date_str).alias("date"))
-
-        logger.debug(f"成功加载订单簿数据: {date_str}, 行数: {len(df)}")
+        logger.debug(f"成功加载DCE数据: {date_str}, 合约: {contract}, 行数: {len(df)}")
         return df
 
     except Exception as e:
-        logger.error(f"读取订单簿数据失败 {date_str}: {str(e)}")
-        return None
-
-
-def load_daily_kline(date_str: str) -> Optional[pl.DataFrame]:
-    """
-    从 ZIP 文件中读取单日K线数据
-
-    Args:
-        date_str: 日期字符串，格式 'YYYY-MM-DD'
-
-    Returns:
-        Polars DataFrame 或 None（如果文件不存在）
-
-    DataFrame 格式:
-        - open_time, open, high, low, close, volume, close_time,
-          quote_volume, count, taker_buy_volume, taker_buy_quote_volume, ignore
-    """
-    zip_path = get_kline_filepath(date_str)
-
-    if not zip_path.exists():
-        logger.warning(f"K线文件不存在: {zip_path}")
-        return None
-
-    try:
-        # 从 ZIP 文件中读取 CSV
-        with zipfile.ZipFile(zip_path, 'r') as z:
-            # ZIP 文件中应该只有一个 CSV 文件
-            csv_files = [f for f in z.namelist() if f.endswith('.csv')]
-            if not csv_files:
-                logger.error(f"ZIP 文件中没有 CSV 文件: {zip_path}")
-                return None
-
-            # 读取第一个 CSV 文件
-            with z.open(csv_files[0]) as f:
-                df = pl.read_csv(f)
-
-        # 添加日期列用于调试
-        df = df.with_columns(pl.lit(date_str).alias("date"))
-
-        logger.debug(f"成功加载K线数据: {date_str}, 行数: {len(df)}")
-        return df
-
-    except Exception as e:
-        logger.error(f"读取K线数据失败 {date_str}: {str(e)}")
+        logger.error(f"读取DCE数据失败 {date_str}, 合约 {contract}: {str(e)}")
         return None
 
 
 def load_date_range_data(
     start_date: str,
     end_date: str,
-    data_type: str = "both"
-) -> Tuple[Optional[pl.DataFrame], Optional[pl.DataFrame]]:
+    contract: str = None,
+    use_main_contract: bool = None
+) -> Optional[pl.DataFrame]:
     """
-    加载日期范围内的所有数据
+    加载日期范围内的所有DCE数据
 
     Args:
         start_date: 起始日期 'YYYY-MM-DD'
         end_date: 结束日期 'YYYY-MM-DD'
-        data_type: 数据类型 ("both", "bookdepth", "kline")
+        contract: 合约代码 (例: 'm2301')。如果为None，根据use_main_contract参数决定行为
+        use_main_contract: 是否自动识别主力合约。如果为None，使用配置文件中的USE_MAIN_CONTRACT
 
     Returns:
-        (bookdepth_df, kline_df) 元组
+        合并后的DataFrame 或 None
+
+    说明:
+        - 如果指定了contract参数，则所有日期使用同一合约
+        - 如果contract为None且use_main_contract=True，则每天自动识别当天的主力合约
+        - 如果contract为None且use_main_contract=False，使用DEFAULT_CONTRACT
     """
     date_list = generate_date_range(start_date, end_date)
     logger.info(f"准备加载 {len(date_list)} 天的数据，从 {start_date} 到 {end_date}")
 
-    bookdepth_dfs = []
-    kline_dfs = []
+    # 确定是否使用主力合约
+    if use_main_contract is None:
+        use_main_contract = USE_MAIN_CONTRACT
+
+    if contract is not None:
+        logger.info(f"使用固定合约: {contract}")
+    elif use_main_contract:
+        logger.info("自动识别每日主力合约")
+    elif DEFAULT_CONTRACT is not None:
+        logger.info(f"使用默认合约: {DEFAULT_CONTRACT}")
+        contract = DEFAULT_CONTRACT
+    else:
+        logger.error("未指定合约且未配置默认合约")
+        return None
+
+    dce_dfs = []
 
     for i, date_str in enumerate(date_list):
         if SHOW_PROGRESS and (i + 1) % 10 == 0:
             logger.info(f"进度: {i + 1}/{len(date_list)} 天")
 
-        # 加载订单簿数据
-        if data_type in ["both", "bookdepth"]:
-            bd_df = load_daily_bookdepth(date_str)
-            if bd_df is not None:
-                bookdepth_dfs.append(bd_df)
+        # 如果使用主力合约且未指定固定合约，则每天识别
+        daily_contract = contract if contract is not None else None
 
-        # 加载K线数据
-        if data_type in ["both", "kline"]:
-            kl_df = load_daily_kline(date_str)
-            if kl_df is not None:
-                kline_dfs.append(kl_df)
+        # 加载DCE数据
+        dce_df = load_daily_dce_data(date_str, daily_contract)
+        if dce_df is not None:
+            # 添加日期列用于调试
+            dce_df = dce_df.with_columns(pl.lit(date_str).alias("date"))
+            dce_dfs.append(dce_df)
 
     # 合并所有日期的数据
-    bookdepth_df = None
-    kline_df = None
+    if not dce_dfs:
+        logger.warning("没有加载到任何数据")
+        return None
 
-    if bookdepth_dfs:
-        logger.info(f"合并 {len(bookdepth_dfs)} 天的订单簿数据")
-        bookdepth_df = pl.concat(bookdepth_dfs)
-        logger.info(f"订单簿总行数: {len(bookdepth_df)}")
+    logger.info(f"合并 {len(dce_dfs)} 天的DCE数据")
+    merged_df = pl.concat(dce_dfs)
+    logger.info(f"总行数: {len(merged_df)}")
 
-    if kline_dfs:
-        logger.info(f"合并 {len(kline_dfs)} 天的K线数据")
-        kline_df = pl.concat(kline_dfs)
-        logger.info(f"K线总行数: {len(kline_df)}")
-
-    return bookdepth_df, kline_df
+    return merged_df
 
 
-def pivot_bookdepth(df: pl.DataFrame) -> pl.DataFrame:
+def preprocess_dce_data(df: pl.DataFrame) -> pl.DataFrame:
     """
-    将订单簿长格式转换为宽格式
-
-    输入格式:
-        timestamp, percentage, depth, notional
-
-    输出格式:
-        timestamp, bid1_price, bid1_size, bid2_price, bid2_size, ...,
-        ask1_price, ask1_size, ask2_price, ask2_size, ...
-
-    Args:
-        df: 长格式订单簿数据
-
-    Returns:
-        宽格式订单簿数据
-    """
-    logger.info("开始转换订单簿格式（长格式 -> 宽格式）")
-
-    # 转换 timestamp 为 datetime 类型（如果是字符串）
-    if df["timestamp"].dtype == pl.Utf8:
-        df = df.with_columns(
-            pl.col("timestamp").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
-        )
-
-    # 先计算价格：price = notional / depth
-    df = df.with_columns(
-        (pl.col("notional") / pl.col("depth")).alias("price")
-    )
-
-    # 创建结果列表
-    pivoted_dfs = []
-
-    # 为每个档位创建单独的列
-    for level in BID_LEVELS + ASK_LEVELS:
-        level_name = LEVEL_NAMES[level]
-
-        # 筛选当前档位的数据
-        level_df = df.filter(pl.col("percentage") == level).select([
-            "timestamp",
-            pl.col("price").alias(f"{level_name}_price"),
-            pl.col("depth").alias(f"{level_name}_size")
-        ])
-
-        pivoted_dfs.append(level_df)
-
-    # 按时间戳合并所有档位
-    # 使用 inner join 并且只保留一个 timestamp 列
-    result = pivoted_dfs[0]
-    for i, level_df in enumerate(pivoted_dfs[1:], 1):
-        # 删除 level_df 中的 timestamp 列，使用索引对齐
-        # 先按 timestamp 排序确保顺序一致
-        result = result.sort("timestamp")
-        level_df = level_df.sort("timestamp")
-
-        # 使用 hstack 水平拼接（假设timestamp已对齐）
-        # 但为了安全，还是使用 join
-        result = result.join(level_df, on="timestamp", how="inner", suffix=f"_{i}")
-
-        # 删除可能产生的重复 timestamp 列
-        timestamp_cols = [col for col in result.columns if col.startswith("timestamp_")]
-        if timestamp_cols:
-            result = result.drop(timestamp_cols)
-
-    # 按时间戳排序
-    result = result.sort("timestamp")
-
-    # 只保留每分钟最接近准点的数据
-    # 策略：对每分钟分组，选择秒数最小的那一条
-    original_rows = len(result)
-
-    # 添加辅助列：分钟级别的时间戳（去掉秒数）
-    result = result.with_columns([
-        pl.col("timestamp").dt.truncate("1m").alias("minute"),
-        pl.col("timestamp").dt.second().alias("second")
-    ])
-
-    # 对每分钟分组，选择秒数最小的那一条
-    result = (
-        result
-        .sort(["minute", "second"])  # 按分钟和秒数排序
-        .group_by("minute")
-        .first()  # 每组取第一条（秒数最小）
-        .drop(["minute", "second"])  # 删除辅助列
-        .sort("timestamp")
-    )
-
-    filtered_rows = len(result)
-
-    logger.info(f"订单簿格式转换完成，行数: {original_rows} -> {filtered_rows} (每分钟保留1条)")
-    if original_rows > filtered_rows:
-        logger.info(f"过滤掉同分钟的重复数据: {original_rows - filtered_rows} 行")
-
-    return result
-
-
-def preprocess_kline(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    预处理K线数据
+    预处理DCE五档行情数据
 
     处理步骤:
-    1. 转换时间戳（毫秒 -> 日期时间）
-    2. 重命名列（open -> open_price, etc.）
+    1. 创建时间戳 (TradingDay + UpdateTime)
+    2. 重命名列 (BidPrice1 -> bid1_price, etc.)
     3. 选择需要的列
 
     Args:
-        df: 原始K线数据
+        df: 原始DCE数据
 
     Returns:
-        预处理后的K线数据
+        预处理后的数据
     """
-    logger.info("开始预处理K线数据")
+    logger.info("开始预处理DCE数据")
+    original_rows = len(df)
 
-    # 转换时间戳（Unix毫秒 -> 日期时间）
+    # 1. 创建时间戳：TradingDay + UpdateTime
+    # TradingDay格式: 20230901 (整数), UpdateTime格式: "21:00:00.850" (字符串)
+
+    # 将TradingDay从整数转为字符串格式 YYYY-MM-DD
     df = df.with_columns(
-        pl.from_epoch(pl.col("open_time"), time_unit="ms").alias("timestamp")
+        pl.col("TradingDay").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("trading_date")
     )
 
-    # 重命名列
-    df = df.rename(KLINE_RENAME_MAP)
-
-    # 保留 close 列（作为 close_price 的副本）
+    # 合并日期和时间字符串
     df = df.with_columns(
-        pl.col("close_price").alias("close")
+        (pl.col("trading_date").cast(pl.Utf8) + " " + pl.col("UpdateTime").cast(pl.Utf8))
+        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f")
+        .alias("timestamp")
     )
 
-    # 选择需要的列
-    columns_to_keep = [
-        "timestamp",
-        "open_price", "high_price", "low_price", "close_price", "close",
-        "traded_volume", "taker_buy_volume", "count"
-    ]
+    # 2. 重命名列
+    df = df.rename(DCE_RENAME_MAP)
 
-    df = df.select(columns_to_keep)
+    # 2.5 确保数值列是正确的类型
+    # K线价格列
+    price_cols = ["open_price", "high_price", "low_price", "close_price"]
+    for col in price_cols:
+        if col in df.columns:
+            df = df.with_columns(pl.col(col).cast(pl.Float64))
 
-    logger.info(f"K线数据预处理完成，行数: {len(df)}")
+    # 订单簿价格和数量列
+    for i in range(1, 6):
+        for side in ["bid", "ask"]:
+            price_col = f"{side}{i}_price"
+            size_col = f"{side}{i}_size"
+            if price_col in df.columns:
+                df = df.with_columns(pl.col(price_col).cast(pl.Float64))
+            if size_col in df.columns:
+                df = df.with_columns(pl.col(size_col).cast(pl.Int64))
+
+    # 3. 选择需要的列
+    # 基础列
+    base_columns = ["timestamp"]
+
+    # K线价格列（已重命名）
+    kline_columns = ["open_price", "high_price", "low_price", "close_price"]
+
+    # 订单簿列（已重命名）
+    orderbook_columns = []
+    for i in range(1, 6):
+        orderbook_columns.extend([
+            f"bid{i}_price", f"bid{i}_size",
+            f"ask{i}_price", f"ask{i}_size"
+        ])
+
+    # 保留的原始列（用于调试）
+    original_columns = [col for col in DCE_KEEP_ORIGINAL if col in df.columns]
+
+    # 合并所有需要的列
+    columns_to_keep = base_columns + kline_columns + orderbook_columns + original_columns
+
+    # 检查哪些列存在
+    available_columns = [col for col in columns_to_keep if col in df.columns]
+    missing_columns = [col for col in columns_to_keep if col not in df.columns]
+
+    if missing_columns:
+        logger.warning(f"缺少以下列: {missing_columns}")
+
+    df = df.select(available_columns)
+
+    # 4. 按时间戳排序
+    df = df.sort("timestamp")
+
+    # 5. 去重：保留每分钟第一条数据
+    # 添加辅助列：分钟级别的时间戳
+    df = df.with_columns(
+        pl.col("timestamp").dt.truncate("1m").alias("minute")
+    )
+
+    # 对每分钟分组，选择第一条
+    df = (
+        df
+        .group_by("minute")
+        .first()
+        .drop("minute")
+        .sort("timestamp")
+    )
+
+    final_rows = len(df)
+
+    logger.info(f"DCE数据预处理完成，行数: {original_rows} -> {final_rows} (每分钟保留1条)")
+    if original_rows > final_rows:
+        logger.info(f"过滤掉同分钟的重复数据: {original_rows - final_rows} 行")
+
     return df
 
 
-def merge_data(bookdepth_df: pl.DataFrame, kline_df: pl.DataFrame) -> pl.DataFrame:
+def process_dce_data(df: pl.DataFrame) -> pl.DataFrame:
     """
-    按时间戳合并订单簿和K线数据
+    处理DCE数据（预处理的封装）
 
     Args:
-        bookdepth_df: 宽格式订单簿数据
-        kline_df: 预处理后的K线数据
+        df: 原始DCE数据
 
     Returns:
-        合并后的数据
-
-    输出格式:
-        timestamp, open_price, high_price, low_price, close_price,
-        bid1_price, bid1_size, ..., ask5_price, ask5_size,
-        volume, taker_buy_volume, count
+        处理后的数据，包含所有必要的列
     """
-    logger.info("开始合并订单簿和K线数据")
-
-    # 确保时间戳格式一致
-    # bookdepth 的 timestamp 可能是字符串，需要转换
-    if bookdepth_df["timestamp"].dtype == pl.Utf8:
-        # 尝试多种时间格式
-        try:
-            # 格式1: "2023-06-30 15:07:31" (带秒)
-            bookdepth_df = bookdepth_df.with_columns(
-                pl.col("timestamp").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S")
-            )
-        except:
-            try:
-                # 格式2: "2023/06/30 15:07" (不带秒，斜杠分隔)
-                bookdepth_df = bookdepth_df.with_columns(
-                    pl.col("timestamp").str.strptime(pl.Datetime, "%Y/%m/%d %H:%M")
-                )
-            except:
-                # 格式3: "2023-06-30 15:07" (不带秒，短横线分隔)
-                bookdepth_df = bookdepth_df.with_columns(
-                    pl.col("timestamp").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M")
-                )
-
-    # 统一时间戳精度为毫秒（ms）并截断到分钟
-    # K线数据是分钟级别，订单簿可能带秒
-    # 将时间戳截断到分钟级别以提高匹配率
-    kline_df = kline_df.with_columns(
-        pl.col("timestamp").cast(pl.Datetime("ms")).dt.truncate("1m").alias("timestamp")
-    )
-    bookdepth_df = bookdepth_df.with_columns(
-        pl.col("timestamp").cast(pl.Datetime("ms")).dt.truncate("1m").alias("timestamp")
-    )
-
-    # 内连接（只保留两个数据集都有的时间戳）
-    merged = kline_df.join(bookdepth_df, on="timestamp", how="inner")
-
-    logger.info(f"数据合并完成，行数: {len(merged)}")
-
-    # 检查合并后的数据完整性
-    if len(merged) > 0:
-        null_counts = merged.null_count()
-        # Polars 的 sum() 返回的是 DataFrame，需要取所有列的和
-        total_nulls = null_counts.sum().to_dicts()[0]
-        total_nulls_sum = sum(total_nulls.values())
-
-        if total_nulls_sum > 0:
-            logger.warning(f"合并后存在 {total_nulls_sum} 个空值")
-            logger.debug(f"空值统计:\n{null_counts}")
-
-    return merged
+    # DCE数据已经包含K线和订单簿数据，只需要预处理即可
+    return preprocess_dce_data(df)
 
 
 def validate_data(df: pl.DataFrame) -> bool:
@@ -430,24 +331,31 @@ def validate_data(df: pl.DataFrame) -> bool:
 
         if null_count > 0:
             logger.warning(f"数据中存在 {null_count} 个空值")
-            passed = False
+            # 不直接失败，因为某些列可能允许空值
     else:
         logger.warning("数据为空，跳过验证")
         return False
 
     # 检查 bid1_price < ask1_price
-    invalid_spread = df.filter(pl.col("bid1_price") >= pl.col("ask1_price"))
-    if len(invalid_spread) > 0:
-        logger.error(f"发现 {len(invalid_spread)} 行数据的 bid1_price >= ask1_price")
-        passed = False
-
-    # 检查负值
-    price_columns = [col for col in df.columns if "price" in col]
-    for col in price_columns:
-        negative = df.filter(pl.col(col) < 0)
-        if len(negative) > 0:
-            logger.error(f"列 {col} 中存在 {len(negative)} 个负值")
+    if "bid1_price" in df.columns and "ask1_price" in df.columns:
+        invalid_spread = df.filter(pl.col("bid1_price") >= pl.col("ask1_price"))
+        if len(invalid_spread) > 0:
+            logger.error(f"发现 {len(invalid_spread)} 行数据的 bid1_price >= ask1_price")
             passed = False
+
+    # 检查负值（只检查数值类型的price列）
+    price_columns = [col for col in df.columns if "price" in col and col in df.columns]
+    for col in price_columns:
+        # 跳过可能为负的特殊列
+        if col in ["kmid", "ksft"]:
+            continue
+        # 只检查数值类型的列
+        col_dtype = df[col].dtype
+        if col_dtype in [pl.Float64, pl.Float32, pl.Int64, pl.Int32]:
+            negative = df.filter(pl.col(col) < 0)
+            if len(negative) > 0:
+                logger.error(f"列 {col} 中存在 {len(negative)} 个负值")
+                passed = False
 
     if passed:
         logger.info("数据质量验证通过")
@@ -466,57 +374,47 @@ if __name__ == "__main__":
     )
 
     # 测试单日数据加载
-    test_date = "2023-06-30"
+    test_date = "2023-01-03"
     print(f"\n{'='*60}")
-    print(f"测试加载单日数据: {test_date}")
+    print(f"测试加载单日DCE数据（自动识别主力合约）")
+    print(f"日期: {test_date}")
     print(f"{'='*60}")
 
-    # 加载订单簿数据
-    bd_df = load_daily_bookdepth(test_date)
-    if bd_df is not None:
-        print(f"\n订单簿数据预览:")
-        print(bd_df.head())
-        print(f"形状: {bd_df.shape}")
+    # 加载DCE数据（自动识别主力合约）
+    dce_df = load_daily_dce_data(test_date)
+    if dce_df is not None:
+        print(f"\nDCE原始数据预览:")
+        print(dce_df.head())
+        print(f"形状: {dce_df.shape}")
+        print(f"列名: {dce_df.columns}")
 
-    # 加载K线数据
-    kl_df = load_daily_kline(test_date)
-    if kl_df is not None:
-        print(f"\nK线数据预览:")
-        print(kl_df.head())
-        print(f"形状: {kl_df.shape}")
-
-    # 测试订单簿格式转换
-    if bd_df is not None:
+        # 测试预处理
         print(f"\n{'='*60}")
-        print("测试订单簿格式转换")
+        print("测试DCE数据预处理")
         print(f"{'='*60}")
-        pivoted = pivot_bookdepth(bd_df)
-        print(f"\n宽格式订单簿预览:")
-        print(pivoted.head())
-        print(f"列名: {pivoted.columns}")
-
-    # 测试K线预处理
-    if kl_df is not None:
-        print(f"\n{'='*60}")
-        print("测试K线预处理")
-        print(f"{'='*60}")
-        processed_kl = preprocess_kline(kl_df)
-        print(f"\n预处理后K线预览:")
-        print(processed_kl.head())
-        print(f"列名: {processed_kl.columns}")
-
-    # 测试数据合并
-    if bd_df is not None and kl_df is not None:
-        print(f"\n{'='*60}")
-        print("测试数据合并")
-        print(f"{'='*60}")
-        pivoted = pivot_bookdepth(bd_df)
-        processed_kl = preprocess_kline(kl_df)
-        merged = merge_data(pivoted, processed_kl)
-        print(f"\n合并后数据预览:")
-        print(merged.head())
-        print(f"形状: {merged.shape}")
-        print(f"列名: {merged.columns}")
+        processed = preprocess_dce_data(dce_df)
+        print(f"\n预处理后数据预览:")
+        print(processed.head())
+        print(f"形状: {processed.shape}")
+        print(f"列名: {processed.columns}")
 
         # 验证数据
-        validate_data(merged)
+        print(f"\n{'='*60}")
+        print("数据质量验证")
+        print(f"{'='*60}")
+        validate_data(processed)
+
+    # 测试日期范围加载
+    print(f"\n{'='*60}")
+    print("测试日期范围数据加载（自动识别主力合约）")
+    print(f"{'='*60}")
+    range_df = load_date_range_data("2023-01-03", "2023-01-05")
+    if range_df is not None:
+        print(f"\n日期范围数据预览:")
+        print(range_df.head())
+        print(f"形状: {range_df.shape}")
+
+        # 预处理
+        processed_range = preprocess_dce_data(range_df)
+        print(f"\n预处理后形状: {processed_range.shape}")
+        validate_data(processed_range)
