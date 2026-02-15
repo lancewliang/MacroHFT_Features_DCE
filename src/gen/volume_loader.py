@@ -60,6 +60,7 @@ def load_daily_volume_data(date_str: str, contract_code: str) -> Optional[pl.Dat
         return None
 
     try:
+        logger.info(f"开始加载期货成交量统计数据: {date_str}, 合约: {contract_code}, 文件: {csv_path}")
         # 读取CSV文件
         df = pl.read_csv(csv_path)
 
@@ -105,9 +106,13 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
     """
     logger.info(f"开始计算OHLCV数据（窗口: {window}）")
 
+
+
+
+
     # 1. 创建时间戳
     df = df.with_columns(
-        pl.col("TradingDay").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("trading_date")
+        pl.col("ActionDay").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("trading_date")
     )
 
     df = df.with_columns(
@@ -118,6 +123,7 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
 
     # 1.5. 按合约和时间排序（从早到晚）
     df = df.sort(["contract", "timestamp"])
+
 
     # 2. 重命名列
     df = df.rename(DCE_VOLUME_RENAME_MAP)
@@ -139,21 +145,33 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
     df = df.with_columns(
         pl.col("timestamp").dt.truncate(window).alias("minute")
     )
-
+    # 选择关键字段打印到日志（所有行）
+    display_cols = ["contract", "timestamp", "TradingDay", "UpdateTime", "minute" ,"price1"]
+    display_df = df.select(display_cols) 
+    # 设置polars显示所有行，避免省略号
+    with pl.Config(tbl_rows=100):
+        logger.info(f"\n原始数据前10分钟（共{len(display_df)}行）：\n{display_df}")
+    logger.info(f"原始数据前10分钟总行数: {len(display_df)}")
     # 4.5. 打印原始数据前10分钟的行，方便人工核对
-    unique_minutes = df.select("minute").unique().sort("minute").head(10)["minute"].to_list()
+    unique_minutes = df.select("minute").unique().sort("minute").head(5)["minute"].to_list()
     if unique_minutes:
-        logger.info(f"=== 原始数据前10分钟 (共 {len(unique_minutes)} 分钟) ===")
-        first_10min_data = df.filter(pl.col("minute").is_in(unique_minutes))
+        logger.info(f"=== 原始数据前5分钟 (共 {len(unique_minutes)} 分钟) ===")
+        first_10min_data = df.filter(pl.col("minute").is_in(unique_minutes))        
+        # 导出原始数据到CSV（去除 valid_prices 列）
+        with pl.Config(tbl_rows=100,tbl_cols=10):
+            logger.info(f"原始数据已导出到: {first_10min_data}")
 
-        # 导出原始数据到CSV
-        debug_dir = OUTPUT_ROOT / "debug"
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        raw_csv_path = debug_dir / f"raw_data_first_10min_{timestamp}.csv"
-        first_10min_data.write_csv(raw_csv_path)
-        logger.info(f"原始数据已导出到: {raw_csv_path}")
-        logger.info(f"原始数据前10分钟行数: {len(first_10min_data)}")
+
+
+
+    # 定义所有volume列（用于后续计算trade_volume2）
+    volume_cols = [
+        "buy_open_vol1", "buy_close_vol1", "sell_open_vol1", "sell_close_vol1",
+        "buy_open_vol2", "buy_close_vol2", "sell_open_vol2", "sell_close_vol2",
+        "buy_open_vol3", "buy_close_vol3", "sell_open_vol3", "sell_close_vol3",
+        "buy_open_vol4", "buy_close_vol4", "sell_open_vol4", "sell_close_vol4",
+        "buy_open_vol5", "buy_close_vol5", "sell_open_vol5", "sell_close_vol5"
+    ]
 
     # 5. 按分钟分组计算OHLCV
     # 注意：期货成交量统计数据中的每一行都是快照（累计值），所以需要计算增量
@@ -170,39 +188,28 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
         # Close: 窗口内最后一行的所有有效价格的平均值
         pl.col("valid_prices").last().list.mean().alias("close_price"),
 
-        # Volume: 窗口内成交量增量（最后值 - 第一值）
-        # 因为数据是快照（累计值），所以要计算增量而不是累加
-        (
-            (pl.col("buy_open_vol1").last() - pl.col("buy_open_vol1").first()).fill_null(0) +
-            (pl.col("buy_close_vol1").last() - pl.col("buy_close_vol1").first()).fill_null(0) +
-            (pl.col("sell_open_vol1").last() - pl.col("sell_open_vol1").first()).fill_null(0) +
-            (pl.col("sell_close_vol1").last() - pl.col("sell_close_vol1").first()).fill_null(0) +
-            (pl.col("buy_open_vol2").last() - pl.col("buy_open_vol2").first()).fill_null(0) +
-            (pl.col("buy_close_vol2").last() - pl.col("buy_close_vol2").first()).fill_null(0) +
-            (pl.col("sell_open_vol2").last() - pl.col("sell_open_vol2").first()).fill_null(0) +
-            (pl.col("sell_close_vol2").last() - pl.col("sell_close_vol2").first()).fill_null(0) +
-            (pl.col("buy_open_vol3").last() - pl.col("buy_open_vol3").first()).fill_null(0) +
-            (pl.col("buy_close_vol3").last() - pl.col("buy_close_vol3").first()).fill_null(0) +
-            (pl.col("sell_open_vol3").last() - pl.col("sell_open_vol3").first()).fill_null(0) +
-            (pl.col("sell_close_vol3").last() - pl.col("sell_close_vol3").first()).fill_null(0) +
-            (pl.col("buy_open_vol4").last() - pl.col("buy_open_vol4").first()).fill_null(0) +
-            (pl.col("buy_close_vol4").last() - pl.col("buy_close_vol4").first()).fill_null(0) +
-            (pl.col("sell_open_vol4").last() - pl.col("sell_open_vol4").first()).fill_null(0) +
-            (pl.col("sell_close_vol4").last() - pl.col("sell_close_vol4").first()).fill_null(0) +
-            (pl.col("buy_open_vol5").last() - pl.col("buy_open_vol5").first()).fill_null(0) +
-            (pl.col("buy_close_vol5").last() - pl.col("buy_close_vol5").first()).fill_null(0) +
-            (pl.col("sell_open_vol5").last() - pl.col("sell_open_vol5").first()).fill_null(0) +
-            (pl.col("sell_close_vol5").last() - pl.col("sell_close_vol5").first()).fill_null(0)
-        ).alias("trade_volume2")
+        # Volume: 为每个volume列保存last和first值，用于后续计算增量
+        # 因为数据是快照（累计值），增量计算逻辑：
+        #   优先：本分钟last - 上一分钟last
+        #   回退：本分钟last - 本分钟first（当上一分钟不存在时）
+    ] + [
+        pl.col(col).last().alias(f"{col}_last") for col in volume_cols
+    ] + [
+        pl.col(col).first().alias(f"{col}_first") for col in volume_cols
     ]).sort(["minute", "contract"])
 
     # 6. 使用上一分钟的 close_price 作为当前的 open_price
+    # 同时计算每个volume列的上一分钟值（用于trade_volume2计算）
     # 优先使用上一分钟的 close_price，如果上一分钟不存在则使用第一行的平均价格
     ohlcv_df = ohlcv_df.with_columns([
         # 按合约分组，获取上一行的 timestamp
         pl.col("minute").shift(1).over("contract").alias("prev_minute"),
         # 按合约分组，获取上一行的 close_price
         pl.col("close_price").shift(1).over("contract").alias("prev_close_price")
+    ] + [
+        # 为每个volume列获取上一分钟的last值
+        pl.col(f"{col}_last").shift(1).over("contract").alias(f"{col}_prev_last")
+        for col in volume_cols
     ])
 
     # 计算当前分钟 - 1分钟，用于判断上一行是否是真正的"上一分钟"
@@ -220,8 +227,28 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
         .alias("open_price")
     ])
 
+    # 计算 trade_volume2：
+    # 对每个volume列，优先使用本分钟last - 上一分钟last，否则使用本分钟last - 本分钟first
+    volume_delta_expr = pl.lit(0)
+    for col in volume_cols:
+        volume_delta = (
+            pl.when(pl.col("prev_minute") == pl.col("expected_prev_minute"))
+            .then(pl.col(f"{col}_last") - pl.col(f"{col}_prev_last"))
+            .otherwise(pl.col(f"{col}_last") - pl.col(f"{col}_first"))
+            .fill_null(0)
+        )
+        volume_delta_expr = volume_delta_expr + volume_delta
+
+    ohlcv_df = ohlcv_df.with_columns([
+        volume_delta_expr.alias("trade_volume2")
+    ])
+
     # 删除临时列
-    ohlcv_df = ohlcv_df.drop(["prev_minute", "prev_close_price", "expected_prev_minute", "open_price_temp"])
+    temp_cols_to_drop = ["prev_minute", "prev_close_price", "expected_prev_minute", "open_price_temp"]
+    temp_cols_to_drop += [f"{col}_last" for col in volume_cols]
+    temp_cols_to_drop += [f"{col}_first" for col in volume_cols]
+    temp_cols_to_drop += [f"{col}_prev_last" for col in volume_cols]
+    ohlcv_df = ohlcv_df.drop(temp_cols_to_drop)
 
     # 重命名minute为timestamp
     ohlcv_df = ohlcv_df.rename({"minute": "timestamp"})
@@ -234,12 +261,8 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
         logger.info(f"=== 处理后OHLCV数据前10分钟 ===")
 
         # 导出处理后数据到CSV
-        debug_dir = OUTPUT_ROOT / "debug"
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ohlcv_csv_path = debug_dir / f"ohlcv_first_10min_{timestamp}.csv"
-        first_10min_ohlcv.write_csv(ohlcv_csv_path)
-        logger.info(f"处理后数据已导出到: {ohlcv_csv_path}")
+        with pl.Config(tbl_rows=100,tbl_cols=100):
+            logger.info(f"处理后数据前10分钟: {first_10min_ohlcv}")
         logger.info(f"处理后数据前10分钟行数: {len(first_10min_ohlcv)}")
 
     return ohlcv_df
