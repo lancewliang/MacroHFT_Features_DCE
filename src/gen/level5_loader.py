@@ -143,10 +143,15 @@ def preprocess_dce_data(df: pl.DataFrame) -> pl.DataFrame:
             if size_col in df.columns:
                 df = df.with_columns(pl.col(size_col).cast(pl.Int64))
 
-    # 3. 选择需要的列
-    # 基础列
-    base_columns = ["timestamp", "contract_month", "contract"]  # 添加contract列用于合并
+    # 3. 按合约和时间戳排序（从早到晚）
+    df = df.sort("timestamp")
 
+    # 4. 按时间窗口截断时间戳到分钟级别
+    df = df.with_columns(
+        pl.col("timestamp").dt.truncate("1m").alias("minute")
+    )
+
+    # 5. 按分钟分组聚合（使用1分钟内的所有记录）
     # 订单簿列（已重命名）
     orderbook_columns = []
     for i in range(1, 6):
@@ -155,88 +160,99 @@ def preprocess_dce_data(df: pl.DataFrame) -> pl.DataFrame:
             f"ask{i}_price", f"ask{i}_size"
         ])
 
-    # 成交量和成交额快照列
-    snapshot_columns = ["volume_snp", "turnover_snp"]
+    # 构建聚合表达式
+    agg_exprs = []
 
-    # 保留的原始列（用于调试）
-    original_columns = [col for col in DCE_KEEP_ORIGINAL if col in df.columns]
+    # 保留 contract_month（取第一个值）
+    if "contract_month" in df.columns:
+        agg_exprs.append(pl.col("contract_month").first().alias("contract_month"))
 
-    # 合并所有需要的列（不包含K线价格列，它们将从期货成交量统计数据计算）
-    columns_to_keep = base_columns + orderbook_columns + snapshot_columns + original_columns
+    # 订单簿数据：取每分钟最后一条（快照值）
+    for col in orderbook_columns:
+        if col in df.columns:
+            agg_exprs.append(pl.col(col).last().alias(col))
 
-    # 检查哪些列存在
-    available_columns = [col for col in columns_to_keep if col in df.columns]
-    missing_columns = [col for col in columns_to_keep if col not in df.columns]
+    # 成交量和成交额快照：取每分钟最后一条
+    if "volume_snp" in df.columns:
+        agg_exprs.append(pl.col("volume_snp").last().alias("volume_snp"))
+    if "turnover_snp" in df.columns:
+        agg_exprs.append(pl.col("turnover_snp").last().alias("turnover_snp"))
 
-    if missing_columns:
-        logger.warning(f"缺少以下列: {missing_columns}")
+    # 保留的原始列：取最后一条
+    for col in DCE_KEEP_ORIGINAL:
+        if col in df.columns:
+            agg_exprs.append(pl.col(col).last().alias(col))
 
-    df = df.select(available_columns)
-
-    # 4. 按合约和时间戳排序
-    if "contract" in df.columns:
-        df = df.sort(["contract", "timestamp"])
-    else:
-        df = df.sort("timestamp")
-
-    # 5. 去重：保留每分钟最后一条数据（快照值）
-    # 首先截断timestamp到分钟级别（用于与OHLCV数据对齐）
-    df = df.with_columns(
-        pl.col("timestamp").dt.truncate("1m").alias("timestamp")
-    )
-
-    # 对每分钟分组，选择最后一条（现在timestamp已经是分钟级别，所以group_by可以直接使用timestamp）
-    df = (
-        df
-        .group_by(["timestamp", "contract"] if "contract" in df.columns else "timestamp")
-        .last()
-        .sort(["contract", "timestamp"] if "contract" in df.columns else "timestamp")
-    )
+    # 执行分组聚合
+    df_agg = df.group_by("minute").agg(agg_exprs).sort("minute")
 
     # 6. 计算每分钟的成交量和成交额增量
     # volume_snp 和 turnover_snp 是快照数据（累计值），需要计算增量
-    if "volume_snp" in df.columns:
-        if "contract" in df.columns:
-            # 按合约分组计算增量
-            df = df.with_columns([
-                (pl.col("volume_snp") - pl.col("volume_snp").shift(1).over("contract")).alias("trade_volume1")
-            ])
-        else:
-            df = df.with_columns([
-                (pl.col("volume_snp") - pl.col("volume_snp").shift(1)).alias("trade_volume1")
-            ])
+    if "volume_snp" in df_agg.columns:
+        # 获取上一分钟的数据
+        df_agg = df_agg.with_columns([
+            pl.col("minute").shift(1).over("contract").alias("prev_minute") if "contract" in df_agg.columns
+            else pl.col("minute").shift(1).alias("prev_minute"),
 
-        # 第一行没有上一分钟的数据，增量设为0或null（这里设为0）
-        df = df.with_columns(
-            pl.col("trade_volume1").fill_null(0)
-        )
+            pl.col("volume_snp").shift(1).over("contract").alias("prev_volume_snp") if "contract" in df_agg.columns
+            else pl.col("volume_snp").shift(1).alias("prev_volume_snp")
+        ])
 
-    if "turnover_snp" in df.columns:
-        if "contract" in df.columns:
-            # 按合约分组计算增量
-            df = df.with_columns([
-                (pl.col("turnover_snp") - pl.col("turnover_snp").shift(1).over("contract")).alias("trade_turnover1")
-            ])
-        else:
-            df = df.with_columns([
-                (pl.col("turnover_snp") - pl.col("turnover_snp").shift(1)).alias("trade_turnover1")
-            ])
+        # 计算期望的上一分钟时间
+        df_agg = df_agg.with_columns([
+            (pl.col("minute") - pl.duration(minutes=1)).alias("expected_prev_minute")
+        ])
 
-        # 第一行没有上一分钟的数据，增量设为0或null（这里设为0）
-        df = df.with_columns(
-            pl.col("trade_turnover1").fill_null(0)
-        )
+        # 只有当上一行确实是上一分钟时，才计算增量；否则设为当前值（第一条记录）
+        df_agg = df_agg.with_columns([
+            pl.when(pl.col("prev_minute") == pl.col("expected_prev_minute"))
+            .then(pl.col("volume_snp") - pl.col("prev_volume_snp"))
+            .otherwise(pl.col("volume_snp"))  # 第一条记录使用当前快照值
+            .alias("trade_volume1")
+        ])
 
-    final_rows = len(df)
+        # 删除临时列
+        df_agg = df_agg.drop(["prev_minute", "prev_volume_snp", "expected_prev_minute"])
 
-    logger.info(f"DCE数据预处理完成，行数: {original_rows} -> {final_rows} (每分钟保留1条)")
+    if "turnover_snp" in df_agg.columns:
+        # 获取上一分钟的数据
+        df_agg = df_agg.with_columns([
+            pl.col("minute").shift(1).over("contract").alias("prev_minute") if "contract" in df_agg.columns
+            else pl.col("minute").shift(1).alias("prev_minute"),
+
+            pl.col("turnover_snp").shift(1).over("contract").alias("prev_turnover_snp") if "contract" in df_agg.columns
+            else pl.col("turnover_snp").shift(1).alias("prev_turnover_snp")
+        ])
+
+        # 计算期望的上一分钟时间
+        df_agg = df_agg.with_columns([
+            (pl.col("minute") - pl.duration(minutes=1)).alias("expected_prev_minute")
+        ])
+
+        # 只有当上一行确实是上一分钟时，才计算增量；否则设为当前值（第一条记录）
+        df_agg = df_agg.with_columns([
+            pl.when(pl.col("prev_minute") == pl.col("expected_prev_minute"))
+            .then(pl.col("turnover_snp") - pl.col("prev_turnover_snp"))
+            .otherwise(pl.col("turnover_snp"))  # 第一条记录使用当前快照值
+            .alias("trade_turnover1")
+        ])
+
+        # 删除临时列
+        df_agg = df_agg.drop(["prev_minute", "prev_turnover_snp", "expected_prev_minute"])
+
+    # 重命名 minute 为 timestamp
+    df_agg = df_agg.rename({"minute": "timestamp"})
+
+    final_rows = len(df_agg)
+
+    logger.info(f"DCE数据预处理完成，行数: {original_rows} -> {final_rows} (每分钟聚合1条)")
     if original_rows > final_rows:
-        logger.info(f"过滤掉同分钟的重复数据: {original_rows - final_rows} 行")
+        logger.info(f"聚合处理: {original_rows - final_rows} 行")
 
     # 输出增量计算信息
-    if "trade_volume1" in df.columns:
+    if "trade_volume1" in df_agg.columns:
         logger.info("已计算每分钟成交量增量 (trade_volume1)")
-    if "trade_turnover1" in df.columns:
+    if "trade_turnover1" in df_agg.columns:
         logger.info("已计算每分钟成交额增量 (trade_turnover1)")
 
-    return df
+    return df_agg

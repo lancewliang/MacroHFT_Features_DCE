@@ -7,20 +7,23 @@ import polars as pl
 from pathlib import Path
 from typing import List, Optional
 import logging
+from datetime import datetime
 
 try:
     # 尝试相对导入（当作为包导入时）
     from .config import (
         get_dce_filepath,
         DATA_TYPE_VOLUME,
-        DCE_VOLUME_RENAME_MAP
+        DCE_VOLUME_RENAME_MAP,
+        OUTPUT_ROOT
     )
 except ImportError:
     # 回退到绝对导入（当直接运行时）
     from config import (
         get_dce_filepath,
         DATA_TYPE_VOLUME,
-        DCE_VOLUME_RENAME_MAP
+        DCE_VOLUME_RENAME_MAP,
+        OUTPUT_ROOT
     )
 
 # 配置日志
@@ -137,6 +140,21 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
         pl.col("timestamp").dt.truncate(window).alias("minute")
     )
 
+    # 4.5. 打印原始数据前10分钟的行，方便人工核对
+    unique_minutes = df.select("minute").unique().sort("minute").head(10)["minute"].to_list()
+    if unique_minutes:
+        logger.info(f"=== 原始数据前10分钟 (共 {len(unique_minutes)} 分钟) ===")
+        first_10min_data = df.filter(pl.col("minute").is_in(unique_minutes))
+
+        # 导出原始数据到CSV
+        debug_dir = OUTPUT_ROOT / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        raw_csv_path = debug_dir / f"raw_data_first_10min_{timestamp}.csv"
+        first_10min_data.write_csv(raw_csv_path)
+        logger.info(f"原始数据已导出到: {raw_csv_path}")
+        logger.info(f"原始数据前10分钟行数: {len(first_10min_data)}")
+
     # 5. 按分钟分组计算OHLCV
     # 注意：期货成交量统计数据中的每一行都是快照（累计值），所以需要计算增量
     ohlcv_df = df.group_by(["minute", "contract"]).agg([
@@ -209,5 +227,19 @@ def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl
     ohlcv_df = ohlcv_df.rename({"minute": "timestamp"})
 
     logger.info(f"OHLCV计算完成，生成 {len(ohlcv_df)} 条K线数据")
+
+    # 打印处理后数据前10分钟的行，方便人工核对
+    if len(ohlcv_df) > 0:
+        first_10min_ohlcv = ohlcv_df.head(10)
+        logger.info(f"=== 处理后OHLCV数据前10分钟 ===")
+
+        # 导出处理后数据到CSV
+        debug_dir = OUTPUT_ROOT / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ohlcv_csv_path = debug_dir / f"ohlcv_first_10min_{timestamp}.csv"
+        first_10min_ohlcv.write_csv(ohlcv_csv_path)
+        logger.info(f"处理后数据已导出到: {ohlcv_csv_path}")
+        logger.info(f"处理后数据前10分钟行数: {len(first_10min_ohlcv)}")
 
     return ohlcv_df

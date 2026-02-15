@@ -229,7 +229,7 @@ def load_and_merge_daily_data(date_str: str, contract: str = None) -> Optional[p
             return None
 
         ohlcv_df = calculate_ohlcv_from_volume_data(volume_df)
-
+        
         # 3. 加载五档行情数据（传入相同的合约列表）
         level5_df = load_daily_dce_data(date_str, contract)
         if level5_df is None:
@@ -439,5 +439,5 @@ if __name__ == "__main__":
         print(range_df.head())
         print(f"形状: {range_df.shape}")
         print(f"\nOHLCV数据示例:")
-        print(range_df.select(["timestamp", "open_price", "high_price", "low_price", "close_price", "trade_volume"]).head())
+        print(range_df.select(["timestamp", "open_price", "high_price", "low_price", "close_price", "trade_volume1", "trade_volume2"]).head())
         validate_data(range_df)

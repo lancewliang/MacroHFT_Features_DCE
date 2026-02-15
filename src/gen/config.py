@@ -172,9 +172,11 @@ DCE_VOLUME_RENAME_MAP = {
 }
 
 # 保留的原始字段（用于调试或其他用途）
+# 注意：Volume 和 Turnover 已通过 DCE_RENAME_MAP 重命名为 volume_snp 和 turnover_snp
+# 它们在 level5_loader.py 中通过 snapshot_columns 显式处理
 DCE_KEEP_ORIGINAL = [
     "TradingDay", "UpdateTime", "InstrumentID",
-    "Volume", "Turnover", "OpenInterest"
+    "OpenInterest"
 ]
 
 # ==================== 因子配置 ====================
