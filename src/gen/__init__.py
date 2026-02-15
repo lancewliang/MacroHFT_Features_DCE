@@ -20,8 +20,7 @@ from .config import (
 )
 
 from .data_loader import (
-    load_daily_dce_data,
-    load_date_range_data,
+    load_daily_dce_data, 
     preprocess_dce_data,
     process_dce_data,
     validate_data
@@ -40,8 +39,7 @@ __all__ = [
     "get_output_filepath",
 
     # 数据加载
-    "load_daily_dce_data",
-    "load_date_range_data",
+    "load_daily_dce_data", 
     "preprocess_dce_data",
     "process_dce_data",
     "validate_data",

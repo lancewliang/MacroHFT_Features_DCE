@@ -25,10 +25,7 @@ from config import (
     ensure_directories
 )
 from data_loader import (
-    load_date_range_data,
-     
-    preprocess_kline,
-    merge_data,
+    load_and_merge_date_range,
     validate_data,
     generate_date_range
 )
@@ -62,92 +59,7 @@ def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
         datefmt=date_format,
         handlers=handlers
     )
-
-
-def process_batch(
-    start_date: str,
-    end_date: str,
-    output_path: Path
-) -> bool:
-    """
-    处理一批数据（日期范围内）
-
-    Args:
-        start_date: 起始日期
-        end_date: 结束日期
-        output_path: 输出文件路径
-
-    Returns:
-        是否成功
-    """
-    logger = logging.getLogger(__name__)
-
-    logger.info("="*80)
-    logger.info(f"处理批次: {start_date} 至 {end_date}")
-    logger.info("="*80)
-
-    try:
-        # 1. 加载数据
-        logger.info("步骤 1/5: 加载原始数据")
-        dce_df = load_date_range_data(start_date, end_date)
-
-        if dce_df is None:
-            logger.error("数据加载失败")
-            return False
-
-        # 2. 预处理DCE数据
-        logger.info("步骤 2/5: 预处理DCE数据")
-        from data_loader import preprocess_dce_data
-        processed_df = preprocess_dce_data(dce_df)
-
-        # 3. 预处理K线数据
-        logger.info("步骤 3/5: 预处理K线数据")
-        from data_loader import preprocess_kline
-        kline_processed = preprocess_kline(processed_df)
-
-        # 4. 合并数据（这里实际上不需要合并，因为预处理后的数据已经包含订单簿和K线数据）
-        logger.info("步骤 4/5: 准备数据")
-        merged_df = kline_processed
-
-        # 数据验证
-        if ENABLE_DATA_VALIDATION:
-            logger.info("执行数据质量验证")
-            if not validate_data(merged_df):
-                logger.warning("数据验证未通过，但继续处理")
-
-        # 5. 计算因子
-        logger.info("步骤 5/5: 计算所有因子")
-        features_df = calculate_all_features(merged_df)
-
-        # 删除包含 nan 值的行（由周期性因子导致）
-        rows_before = len(features_df)
-        features_df = features_df.drop_nulls()
-        rows_after = len(features_df)
-        if rows_before > rows_after:
-            logger.info(f"删除了 {rows_before - rows_after} 行包含 NaN 的数据")
-
-        # 6. 保存结果
-        logger.info(f"保存结果到: {output_path}")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if OUTPUT_FORMAT == "parquet":
-            features_df.write_parquet(output_path)
-        elif OUTPUT_FORMAT == "feather":
-            features_df.write_ipc(output_path)
-        else:
-            features_df.write_csv(output_path)
-
-        logger.info(f"成功保存 {len(features_df)} 行数据")
-        logger.info("="*80)
-
-        return True
-
-    except Exception as e:
-        logger.error(f"处理批次时发生错误: {str(e)}", exc_info=True)
-        return False
-
- 
-
+  
 
 def generate_features_single_file(
     start_date: str,
@@ -188,13 +100,13 @@ def generate_features_single_file(
 
         # 加载和处理数据
         try:
-            bookdepth_df, kline_df = load_date_range_data(batch_start, batch_end)
+            # 使用新的加载和合并函数
+            merged_df = load_and_merge_date_range(batch_start, batch_end)
 
-            if bookdepth_df is None or kline_df is None:
+            if merged_df is None:
                 logger.warning(f"批次 {batch_num} 数据加载失败，跳过")
-                continue 
-            kline_processed = preprocess_kline(kline_df)
-            merged_df = merge_data(bookdepth_df, kline_processed)
+                continue
+
             features_df = calculate_all_features(merged_df)
 
             # 删除包含 nan 值的行（由周期性因子导致）

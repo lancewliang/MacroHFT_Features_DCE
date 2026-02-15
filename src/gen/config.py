@@ -112,12 +112,9 @@ DCE_LEVEL5_COLUMNS = [
 ]
 
 # DCE字段重命名映射 (原始字段名 -> 目标字段名)
+# 注意：K线价格字段(open_price, high_price, low_price, close_price)
+# 需要从期货成交量统计数据计算，不从五档行情直接映射
 DCE_RENAME_MAP = {
-    # K线价格字段
-    "OpenPrice": "open_price",
-    "HighPrice": "high_price",
-    "LowPrice": "low_price",
-    "ClosePrice": "close_price",
     # 买方五档
     "BidPrice1": "bid1_price",
     "BidVolume1": "bid1_size",
@@ -140,6 +137,35 @@ DCE_RENAME_MAP = {
     "AskVolume4": "ask4_size",
     "AskPrice5": "ask5_price",
     "AskVolume5": "ask5_size",
+}
+
+# 期货成交量统计数据字段重命名映射（用于OHLCV计算）
+DCE_VOLUME_RENAME_MAP = {
+    "Price1": "price1",
+    "Price2": "price2",
+    "Price3": "price3",
+    "Price4": "price4",
+    "Price5": "price5",
+    "BuyOpenVol1": "buy_open_vol1",
+    "BuyCloseVol1": "buy_close_vol1",
+    "SellOpenVol1": "sell_open_vol1",
+    "SellCloseVol1": "sell_close_vol1",
+    "BuyOpenVol2": "buy_open_vol2",
+    "BuyCloseVol2": "buy_close_vol2",
+    "SellOpenVol2": "sell_open_vol2",
+    "SellCloseVol2": "sell_close_vol2",
+    "BuyOpenVol3": "buy_open_vol3",
+    "BuyCloseVol3": "buy_close_vol3",
+    "SellOpenVol3": "sell_open_vol3",
+    "SellCloseVol3": "sell_close_vol3",
+    "BuyOpenVol4": "buy_open_vol4",
+    "BuyCloseVol4": "buy_close_vol4",
+    "SellOpenVol4": "sell_open_vol4",
+    "SellCloseVol4": "sell_close_vol4",
+    "BuyOpenVol5": "buy_open_vol5",
+    "BuyCloseVol5": "buy_close_vol5",
+    "SellOpenVol5": "sell_open_vol5",
+    "SellCloseVol5": "sell_close_vol5",
 }
 
 # 保留的原始字段（用于调试或其他用途）
@@ -372,16 +398,31 @@ def get_main_contracts(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
     
     # 收集所有合约的成交量信息
     contract_volumes = {}
-    
+
     for contract in main_month_contracts:
         try:
             # 读取合约数据
             filepath = get_dce_filepath(date_str, contract, data_type, commodity)
             if filepath.exists():
                 df = pl.read_csv(filepath)
-                
-                # 计算当日总成交量
-                if "Volume" in df.columns:
+
+                # 根据数据类型计算当日总成交量
+                if data_type == DATA_TYPE_VOLUME:
+                    # 期货成交量统计数据：累加所有开仓/平仓量
+                    vol_cols = []
+                    for i in range(1, 6):
+                        for prefix in ["BuyOpenVol", "BuyCloseVol", "SellOpenVol", "SellCloseVol"]:
+                            col_name = f"{prefix}{i}"
+                            if col_name in df.columns:
+                                vol_cols.append(col_name)
+
+                    if vol_cols:
+                        total_volume = sum(df[col].sum() for col in vol_cols)
+                    else:
+                        total_volume = 0
+
+                elif "Volume" in df.columns:
+                    # 五档行情数据：使用Volume字段的变化量
                     total_volume = df["Volume"].max() - df["Volume"].min()
                 elif "volume" in df.columns:
                     total_volume = df["volume"].max() - df["volume"].min()
@@ -391,7 +432,7 @@ def get_main_contracts(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
                         total_volume = df["OpenInterest"].max() - df["OpenInterest"].min()
                     else:
                         total_volume = 0
-                
+
                 contract_volumes[contract] = total_volume
         except Exception as e:
             # 如果某个合约读取失败，记录为0成交量
@@ -403,19 +444,40 @@ def get_main_contracts(date_str: str, data_type: str = DATA_TYPE_LEVEL5,
     
     # 找到最大成交量
     max_volume = max(contract_volumes.values())
-    
+
     if max_volume == 0:
         raise ValueError(f"日期 {date_str} 的所有合约成交量都为0")
-    
+
+    # 计算阈值
+    threshold_volume = max_volume * volume_threshold
+
     # 根据阈值确定主力合约列表
     main_contracts = []
     for contract, volume in contract_volumes.items():
-        if volume >= max_volume * volume_threshold:
+        if volume >= threshold_volume:
             main_contracts.append(contract)
-    
+
     # 按成交量降序排序
     main_contracts.sort(key=lambda x: contract_volumes[x], reverse=True)
-    
+
+    # 记录详细的识别信息
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"主力合约识别详情 ({date_str}):")
+    logger.info(f"  符合主力月份的合约: {main_month_contracts}")
+    logger.info(f"  成交量阈值: {volume_threshold:.1%} × 最大成交量 = {threshold_volume:,.0f}")
+    logger.info(f"  各合约成交量:")
+
+    # 按成交量降序显示所有合约
+    sorted_contracts = sorted(contract_volumes.items(), key=lambda x: x[1], reverse=True)
+    for contract, volume in sorted_contracts:
+        percentage = (volume / max_volume * 100) if max_volume > 0 else 0
+        is_main = "✓ 主力" if contract in main_contracts else "  "
+        logger.info(f"    {is_main} {contract}: {volume:>12,.0f} ({percentage:>5.1f}%)")
+
+    logger.info(f"  识别出主力合约: {main_contracts}")
+
     return main_contracts
  
 
