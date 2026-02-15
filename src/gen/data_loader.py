@@ -12,33 +12,27 @@ import logging
 try:
     # 尝试相对导入（当作为包导入时）
     from .config import (
-        get_dce_filepath,
-        get_available_contracts,
         get_main_contracts,
         DEFAULT_CONTRACT,
         USE_MAIN_CONTRACT,
-        DATA_TYPE_LEVEL5,
         DATA_TYPE_VOLUME,
-        DCE_RENAME_MAP,
-        DCE_VOLUME_RENAME_MAP,
-        DCE_KEEP_ORIGINAL,
         SHOW_PROGRESS
     )
+    # 从拆分的模块导入
+    from .level5_loader import load_daily_dce_data, preprocess_dce_data
+    from .volume_loader import load_daily_volume_data, calculate_ohlcv_from_volume_data
 except ImportError:
     # 回退到绝对导入（当直接运行时）
     from config import (
-        get_dce_filepath,
-        get_available_contracts,
         get_main_contracts,
         DEFAULT_CONTRACT,
         USE_MAIN_CONTRACT,
-        DATA_TYPE_LEVEL5,
         DATA_TYPE_VOLUME,
-        DCE_RENAME_MAP,
-        DCE_VOLUME_RENAME_MAP,
-        DCE_KEEP_ORIGINAL,
         SHOW_PROGRESS
     )
+    # 从拆分的模块导入
+    from level5_loader import load_daily_dce_data, preprocess_dce_data
+    from volume_loader import load_daily_volume_data, calculate_ohlcv_from_volume_data
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -67,339 +61,6 @@ def generate_date_range(start_date: str, end_date: str) -> List[str]:
     return date_list
 
 
-def load_daily_dce_data(date_str: str, main_contracts: List[str]) -> Optional[pl.DataFrame]:
-    """
-    从 CSV 文件中读取单日DCE五档行情数据
-
-    Args:
-        date_str: 日期字符串，格式 'YYYY-MM-DD'
-        main_contracts: 主力合约列表，例如 ['m2301', 'm2305']
-
-    Returns:
-        Polars DataFrame 或 None（如果文件不存在）
-
-    DataFrame 格式:
-        - timestamp: 时间戳 (TradingDay + UpdateTime)
-        - open_price, high_price, low_price, close_price: K线价格
-        - bid1_price ~ bid5_price: 买方五档价格
-        - bid1_size ~ bid5_size: 买方五档数量
-        - ask1_price ~ ask5_price: 卖方五档价格
-        - ask1_size ~ ask5_size: 卖方五档数量
-        - contract: 合约代码（当合并多个合约时）
-        - 其他原始字段...
-    """
-    if not main_contracts:
-        logger.error("main_contracts 参数不能为空")
-        return None
-
-    # 加载并合并所有合约的数据
-    all_dfs = []
-
-    for contract_code in main_contracts:
-        csv_path = get_dce_filepath(date_str, contract_code, DATA_TYPE_LEVEL5)
-
-        if not csv_path.exists():
-            logger.warning(f"DCE数据文件不存在: {csv_path}")
-            continue
-
-        try:
-            # 读取CSV文件
-            df = pl.read_csv(csv_path)
-
-            # 检查必要的列是否存在
-            required_cols = ["TradingDay", "UpdateTime"]
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                logger.warning(f"合约 {contract_code} 缺少必要列 {missing_cols}: {csv_path}")
-                continue
-
-            # 添加合约代码列
-            df = df.with_columns(pl.lit(contract_code).alias("contract"))
-            
-            # 添加合约月份列（提取合约代码中的月份部分，只保留月份数字1-12）
-            # 合约格式如：m2301 -> 月份为1，i2405 -> 月份为5
-            month_str = contract_code[1:]  # 去掉品种代码，保留月份部分
-            month_num = int(month_str[-2:])  # 提取最后两位作为月份数字
-            df = df.with_columns(pl.lit(month_num).alias("contract_month"))
-            
-            all_dfs.append(df)
-            logger.debug(f"成功加载合约数据: {date_str}, 合约: {contract_code}, 行数: {len(df)}")
-
-        except Exception as e:
-            logger.error(f"读取合约数据失败 {date_str}, 合约 {contract_code}: {str(e)}")
-            continue
-
-    if not all_dfs:
-        logger.error(f"日期 {date_str} 所有合约数据加载失败")
-        return None
-
-    # 合并所有合约的数据
-    if len(all_dfs) == 1:
-        result_df = all_dfs[0]
-    else:
-        # 使用 concat 合并多个DataFrame
-        result_df = pl.concat(all_dfs)
-        logger.info(f"成功合并 {len(all_dfs)} 个合约的数据，总行数: {len(result_df)}")
-
-    return result_df
- 
-
-
-def load_daily_volume_data(date_str: str, main_contracts: List[str]) -> Optional[pl.DataFrame]:
-    """
-    从CSV文件中读取单日DCE期货成交量统计数据
-
-    Args:
-        date_str: 日期字符串，格式 'YYYY-MM-DD'
-        main_contracts: 主力合约列表，例如 ['m2301', 'm2305']
-
-    Returns:
-        Polars DataFrame 或 None（如果文件不存在）
-
-    DataFrame 格式:
-        - timestamp: 时间戳 (TradingDay + UpdateTime)
-        - price1 ~ price5: 最优5个价位
-        - buy_open_vol1 ~ sell_close_vol5: 开仓/平仓成交量
-        - contract: 合约代码
-    """
-    if not main_contracts:
-        logger.error("main_contracts 参数不能为空")
-        return None
-
-    # 加载并合并所有合约的数据
-    all_dfs = []
-
-    for contract_code in main_contracts:
-        csv_path = get_dce_filepath(date_str, contract_code, DATA_TYPE_VOLUME)
-
-        if not csv_path.exists():
-            logger.warning(f"期货成交量统计数据文件不存在: {csv_path}")
-            continue
-
-        try:
-            # 读取CSV文件
-            df = pl.read_csv(csv_path)
-
-            # 检查必要的列是否存在
-            required_cols = ["TradingDay", "UpdateTime", "Price1"]
-            missing_cols = [col for col in required_cols if col not in df.columns]
-            if missing_cols:
-                logger.warning(f"合约 {contract_code} 缺少必要列 {missing_cols}: {csv_path}")
-                continue
-
-            # 添加合约代码列
-            df = df.with_columns(pl.lit(contract_code).alias("contract"))
-
-            all_dfs.append(df)
-            logger.debug(f"成功加载期货成交量统计数据: {date_str}, 合约: {contract_code}, 行数: {len(df)}")
-
-        except Exception as e:
-            logger.error(f"读取期货成交量统计数据失败 {date_str}, 合约 {contract_code}: {str(e)}")
-            continue
-
-    if not all_dfs:
-        logger.error(f"日期 {date_str} 所有合约的期货成交量统计数据加载失败")
-        return None
-
-    # 合并所有合约的数据
-    if len(all_dfs) == 1:
-        result_df = all_dfs[0]
-    else:
-        result_df = pl.concat(all_dfs)
-        logger.info(f"成功合并 {len(all_dfs)} 个合约的期货成交量统计数据，总行数: {len(result_df)}")
-
-    return result_df
-
-
-def calculate_ohlcv_from_volume_data(df: pl.DataFrame, window: str = "1m") -> pl.DataFrame:
-    """
-    从期货成交量统计数据计算K线OHLCV数据
-
-    根据文档1.4节，K线价格需要通过期货成交量统计数据计算：
-    - open_price: 窗口内第一个 Price1
-    - high_price: 窗口内所有 Price1-5 的最大值
-    - low_price: 窗口内所有 Price1-5 的最小值
-    - close_price: 窗口内最后一个 Price1
-    - volume: 窗口内总成交量（所有开仓/平仓量之和）
-
-    Args:
-        df: 期货成交量统计原始数据
-        window: 时间窗口，默认 "1m" (1分钟)
-
-    Returns:
-        包含OHLCV的数据框
-    """
-    logger.info(f"开始计算OHLCV数据（窗口: {window}）")
-
-    # 1. 创建时间戳
-    df = df.with_columns(
-        pl.col("TradingDay").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("trading_date")
-    )
-
-    df = df.with_columns(
-        (pl.col("trading_date").cast(pl.Utf8) + " " + pl.col("UpdateTime").cast(pl.Utf8))
-        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f")
-        .alias("timestamp")
-    )
-
-    # 2. 重命名列
-    df = df.rename(DCE_VOLUME_RENAME_MAP)
-
-    # 3. 过滤掉价格为0的数据（无效价位）
-    # 创建一个表达式来计算所有有效价格的最大值和最小值
-    df = df.with_columns([
-        # 收集所有非零价格
-        pl.concat_list([
-            pl.when(pl.col("price1") > 0).then(pl.col("price1")),
-            pl.when(pl.col("price2") > 0).then(pl.col("price2")),
-            pl.when(pl.col("price3") > 0).then(pl.col("price3")),
-            pl.when(pl.col("price4") > 0).then(pl.col("price4")),
-            pl.when(pl.col("price5") > 0).then(pl.col("price5"))
-        ]).list.drop_nulls().alias("valid_prices")
-    ])
-
-    # 4. 按时间窗口截断时间戳
-    df = df.with_columns(
-        pl.col("timestamp").dt.truncate(window).alias("minute")
-    )
-
-    # 5. 按分钟分组计算OHLCV
-    ohlcv_df = df.group_by(["minute", "contract"]).agg([
-        # Open: 窗口内第一个 price1
-        pl.col("price1").filter(pl.col("price1") > 0).first().alias("open_price"),
-
-        # High: 窗口内所有有效价格的最大值
-        pl.col("valid_prices").flatten().max().alias("high_price"),
-
-        # Low: 窗口内所有有效价格的最小值
-        pl.col("valid_prices").flatten().min().alias("low_price"),
-
-        # Close: 窗口内最后一个 price1
-        pl.col("price1").filter(pl.col("price1") > 0).last().alias("close_price"),
-
-        # Volume: 所有开仓/平仓量之和
-        (
-            pl.col("buy_open_vol1").sum() + pl.col("buy_close_vol1").sum() +
-            pl.col("sell_open_vol1").sum() + pl.col("sell_close_vol1").sum() +
-            pl.col("buy_open_vol2").sum() + pl.col("buy_close_vol2").sum() +
-            pl.col("sell_open_vol2").sum() + pl.col("sell_close_vol2").sum() +
-            pl.col("buy_open_vol3").sum() + pl.col("buy_close_vol3").sum() +
-            pl.col("sell_open_vol3").sum() + pl.col("sell_close_vol3").sum() +
-            pl.col("buy_open_vol4").sum() + pl.col("buy_close_vol4").sum() +
-            pl.col("sell_open_vol4").sum() + pl.col("sell_close_vol4").sum() +
-            pl.col("buy_open_vol5").sum() + pl.col("buy_close_vol5").sum() +
-            pl.col("sell_open_vol5").sum() + pl.col("sell_close_vol5").sum()
-        ).alias("trade_volume")
-    ]).sort("minute")
-
-    # 重命名minute为timestamp
-    ohlcv_df = ohlcv_df.rename({"minute": "timestamp"})
-
-    logger.info(f"OHLCV计算完成，生成 {len(ohlcv_df)} 条K线数据")
-
-    return ohlcv_df
-
-
-def preprocess_dce_data(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    预处理DCE五档行情数据
-
-    处理步骤:
-    1. 创建时间戳 (TradingDay + UpdateTime)
-    2. 重命名列 (BidPrice1 -> bid1_price, etc.)
-    3. 选择需要的列
-
-    Args:
-        df: 原始DCE数据
-
-    Returns:
-        预处理后的数据
-    """
-    logger.info("开始预处理DCE数据")
-    original_rows = len(df)
-
-    # 1. 创建时间戳：TradingDay + UpdateTime
-    # TradingDay格式: 20230901 (整数), UpdateTime格式: "21:00:00.850" (字符串)
-
-    # 将TradingDay从整数转为字符串格式 YYYY-MM-DD
-    df = df.with_columns(
-        pl.col("TradingDay").cast(pl.Utf8).str.strptime(pl.Date, "%Y%m%d").alias("trading_date")
-    )
-
-    # 合并日期和时间字符串
-    df = df.with_columns(
-        (pl.col("trading_date").cast(pl.Utf8) + " " + pl.col("UpdateTime").cast(pl.Utf8))
-        .str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S%.f")
-        .alias("timestamp")
-    )
-
-    # 2. 重命名列
-    df = df.rename(DCE_RENAME_MAP)
-
-    # 2.5 确保数值列是正确的类型
-    # 订单簿价格和数量列
-    for i in range(1, 6):
-        for side in ["bid", "ask"]:
-            price_col = f"{side}{i}_price"
-            size_col = f"{side}{i}_size"
-            if price_col in df.columns:
-                df = df.with_columns(pl.col(price_col).cast(pl.Float64))
-            if size_col in df.columns:
-                df = df.with_columns(pl.col(size_col).cast(pl.Int64))
-
-    # 3. 选择需要的列
-    # 基础列
-    base_columns = ["timestamp", "contract_month", "contract"]  # 添加contract列用于合并
-
-    # 订单簿列（已重命名）
-    orderbook_columns = []
-    for i in range(1, 6):
-        orderbook_columns.extend([
-            f"bid{i}_price", f"bid{i}_size",
-            f"ask{i}_price", f"ask{i}_size"
-        ])
-
-    # 保留的原始列（用于调试）
-    original_columns = [col for col in DCE_KEEP_ORIGINAL if col in df.columns]
-
-    # 合并所有需要的列（不包含K线价格列，它们将从期货成交量统计数据计算）
-    columns_to_keep = base_columns + orderbook_columns + original_columns
-
-    # 检查哪些列存在
-    available_columns = [col for col in columns_to_keep if col in df.columns]
-    missing_columns = [col for col in columns_to_keep if col not in df.columns]
-
-    if missing_columns:
-        logger.warning(f"缺少以下列: {missing_columns}")
-
-    df = df.select(available_columns)
-
-    # 4. 按时间戳排序
-    df = df.sort("timestamp")
-
-    # 5. 去重：保留每分钟第一条数据
-    # 首先截断timestamp到分钟级别（用于与OHLCV数据对齐）
-    df = df.with_columns(
-        pl.col("timestamp").dt.truncate("1m").alias("timestamp")
-    )
-
-    # 对每分钟分组，选择第一条（现在timestamp已经是分钟级别，所以group_by可以直接使用timestamp）
-    df = (
-        df
-        .group_by(["timestamp", "contract"] if "contract" in df.columns else "timestamp")
-        .first()
-        .sort("timestamp")
-    )
-
-    final_rows = len(df)
-
-    logger.info(f"DCE数据预处理完成，行数: {original_rows} -> {final_rows} (每分钟保留1条)")
-    if original_rows > final_rows:
-        logger.info(f"过滤掉同分钟的重复数据: {original_rows - final_rows} 行")
-
-    return df
-
-
 def merge_ohlcv_and_orderbook(
     ohlcv_df: pl.DataFrame,
     orderbook_df: pl.DataFrame,
@@ -418,41 +79,97 @@ def merge_ohlcv_and_orderbook(
     """
     logger.info("开始合并OHLCV和五档行情数据")
 
+    # 记录合并前的行数
+    ohlcv_rows = len(ohlcv_df)
+    orderbook_rows = len(orderbook_df)
+    logger.info(f"  OHLCV数据行数: {ohlcv_rows}")
+    logger.info(f"  订单簿数据行数: {orderbook_rows}")
+
     # 确保两个DataFrame都有timestamp列
     if "timestamp" not in ohlcv_df.columns or "timestamp" not in orderbook_df.columns:
         raise ValueError("OHLCV和订单簿数据都必须包含timestamp列")
 
     # 按timestamp和contract合并
     if "contract" in ohlcv_df.columns and "contract" in orderbook_df.columns:
+        join_keys = ["timestamp", "contract"]
         merged_df = ohlcv_df.join(
             orderbook_df,
-            on=["timestamp", "contract"],
+            on=join_keys,
             how=how
         )
     else:
+        join_keys = ["timestamp"]
         merged_df = ohlcv_df.join(
             orderbook_df,
-            on="timestamp",
+            on=join_keys,
             how=how
         )
 
-    logger.info(f"合并完成，行数: {len(merged_df)}")
+    merged_rows = len(merged_df)
+    logger.info(f"  合并后行数: {merged_rows}")
+
+    # 分析行数差异
+    if how == "inner":
+        ohlcv_lost = ohlcv_rows - merged_rows
+        orderbook_lost = orderbook_rows - merged_rows
+
+        if ohlcv_lost > 0 or orderbook_lost > 0:
+            logger.warning(f"  数据差异分析:")
+            if ohlcv_lost > 0:
+                logger.warning(f"    OHLCV中有 {ohlcv_lost} 行在订单簿中找不到匹配 (丢失 {ohlcv_lost/ohlcv_rows*100:.1f}%)")
+            if orderbook_lost > 0:
+                logger.warning(f"    订单簿中有 {orderbook_lost} 行在OHLCV中找不到匹配 (丢失 {orderbook_lost/orderbook_rows*100:.1f}%)")
+
+            # 找出不匹配的时间戳
+            if "contract" in ohlcv_df.columns and "contract" in orderbook_df.columns:
+                # 有合约列的情况
+                ohlcv_keys = set(ohlcv_df.select(join_keys).iter_rows())
+                orderbook_keys = set(orderbook_df.select(join_keys).iter_rows())
+                only_in_ohlcv = ohlcv_keys - orderbook_keys
+                only_in_orderbook = orderbook_keys - ohlcv_keys
+
+                if only_in_ohlcv:
+                    logger.warning(f"    仅在OHLCV中存在的时间点数量: {len(only_in_ohlcv)}")
+                    # 显示前10个不匹配的时间点
+                    sample_size = min(10, len(only_in_ohlcv))
+                    logger.warning(f"    示例（前{sample_size}个）:")
+                    for idx, key in enumerate(sorted(only_in_ohlcv)[:sample_size], 1):
+                        logger.warning(f"      {idx}. timestamp={key[0]}, contract={key[1]}")
+
+                if only_in_orderbook:
+                    logger.warning(f"    仅在订单簿中存在的时间点数量: {len(only_in_orderbook)}")
+                    # 显示前10个不匹配的时间点
+                    sample_size = min(10, len(only_in_orderbook))
+                    logger.warning(f"    示例（前{sample_size}个）:")
+                    for idx, key in enumerate(sorted(only_in_orderbook)[:sample_size], 1):
+                        logger.warning(f"      {idx}. timestamp={key[0]}, contract={key[1]}")
+            else:
+                # 没有合约列的情况
+                ohlcv_timestamps = set(ohlcv_df.select("timestamp").to_series())
+                orderbook_timestamps = set(orderbook_df.select("timestamp").to_series())
+                only_in_ohlcv = ohlcv_timestamps - orderbook_timestamps
+                only_in_orderbook = orderbook_timestamps - ohlcv_timestamps
+
+                if only_in_ohlcv:
+                    logger.warning(f"    仅在OHLCV中存在的时间点数量: {len(only_in_ohlcv)}")
+                    sample_size = min(10, len(only_in_ohlcv))
+                    logger.warning(f"    示例（前{sample_size}个）:")
+                    for idx, ts in enumerate(sorted(only_in_ohlcv)[:sample_size], 1):
+                        logger.warning(f"      {idx}. {ts}")
+
+                if only_in_orderbook:
+                    logger.warning(f"    仅在订单簿中存在的时间点数量: {len(only_in_orderbook)}")
+                    sample_size = min(10, len(only_in_orderbook))
+                    logger.warning(f"    示例（前{sample_size}个）:")
+                    for idx, ts in enumerate(sorted(only_in_orderbook)[:sample_size], 1):
+                        logger.warning(f"      {idx}. {ts}")
+        else:
+            logger.info(f"  ✓ 所有数据完美匹配，无数据丢失")
 
     return merged_df
 
 
-def process_dce_data(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    处理DCE数据（预处理的封装）
-
-    Args:
-        df: 原始DCE数据
-
-    Returns:
-        处理后的数据，包含所有必要的列
-    """
-    # DCE数据已经包含K线和订单簿数据，只需要预处理即可
-    return preprocess_dce_data(df)
+ 
 
 
 def load_and_merge_daily_data(date_str: str, contract: str = None) -> Optional[pl.DataFrame]:
@@ -502,30 +219,32 @@ def load_and_merge_daily_data(date_str: str, contract: str = None) -> Optional[p
     else:
         logger.error(f"不支持的合约参数类型: {type(contract)}")
         return None
+    
+    merged_dfs = []
+    for contract in contracts_to_load:
+        # 2. 加载期货成交量统计数据并计算OHLCV（传入合约列表）
+        volume_df = load_daily_volume_data(date_str, contract)
+        if volume_df is None:
+            logger.warning(f"无法加载期货成交量统计数据: {date_str}")
+            return None
 
-    # 2. 加载期货成交量统计数据并计算OHLCV（传入合约列表）
-    volume_df = load_daily_volume_data(date_str, contracts_to_load)
-    if volume_df is None:
-        logger.warning(f"无法加载期货成交量统计数据: {date_str}")
-        return None
+        ohlcv_df = calculate_ohlcv_from_volume_data(volume_df)
 
-    ohlcv_df = calculate_ohlcv_from_volume_data(volume_df)
+        # 3. 加载五档行情数据（传入相同的合约列表）
+        level5_df = load_daily_dce_data(date_str, contract)
+        if level5_df is None:
+            logger.warning(f"无法加载五档行情数据: {date_str}")
+            return None
 
-    # 3. 加载五档行情数据（传入相同的合约列表）
-    level5_df = load_daily_dce_data(date_str, contracts_to_load)
-    if level5_df is None:
-        logger.warning(f"无法加载五档行情数据: {date_str}")
-        return None
+        # 4. 预处理五档行情数据
+        orderbook_df = preprocess_dce_data(level5_df)
 
-    # 4. 预处理五档行情数据
-    orderbook_df = preprocess_dce_data(level5_df)
+        # 5. 合并OHLCV和订单簿数据
+        merged_df = merge_ohlcv_and_orderbook(ohlcv_df, orderbook_df, how="inner")
 
-    # 5. 合并OHLCV和订单簿数据
-    merged_df = merge_ohlcv_and_orderbook(ohlcv_df, orderbook_df, how="inner")
-
-    logger.info(f"日期 {date_str} 数据加载和合并完成，行数: {len(merged_df)}")
-
-    return merged_df
+        logger.info(f"日期 {date_str} 数据加载和合并完成，行数: {len(merged_df)}")
+        merged_dfs.append(merged_df)
+    return pl.concat(merged_dfs)
 
 
 def load_and_merge_date_range(

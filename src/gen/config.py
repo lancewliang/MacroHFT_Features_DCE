@@ -137,6 +137,9 @@ DCE_RENAME_MAP = {
     "AskVolume4": "ask4_size",
     "AskPrice5": "ask5_price",
     "AskVolume5": "ask5_size",
+    # 成交量和成交额（快照数据）
+    "Volume": "volume_snp",
+    "Turnover": "turnover_snp",
 }
 
 # 期货成交量统计数据字段重命名映射（用于OHLCV计算）
