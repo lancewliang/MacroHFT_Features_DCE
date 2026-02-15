@@ -30,10 +30,10 @@ DCE 数据包含三种主要数据类型:
 | `InstrumentID` | String | 合约代码 (如 y2309) | - |
 | **价格字段** |
 | `LastPrice` | Float | 最新价 | - |
-| `HighPrice` | Float | 最高价 | `high_price` |
-| `LowPrice` | Float | 最低价 | `low_price` |
-| `OpenPrice` | Float | 开盘价 | `open_price` |
-| `ClosePrice` | Float | 收盘价 | `close_price` |
+| `HighPrice` | Float | 最高价 | - |
+| `LowPrice` | Float | 最低价 | - |
+| `OpenPrice` | Float | 开盘价 | - |
+| `ClosePrice` | Float | 收盘价 | - |
 | `SettlementPrice` | Float | 结算价 | - |
 | `PreSettlementPrice` | Float | 前结算价 | - |
 | `PreClosePrice` | Float | 前收盘价 | - |
