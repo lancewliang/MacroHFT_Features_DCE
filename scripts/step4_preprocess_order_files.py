@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-五档行情数据处理脚本（polars版本） 
-功能：按分钟聚合期货挂单量数据，bidx_price bidx_size askx_price askx_size
+五档行情数据处理脚本（polars版本）
+功能：按30秒聚合期货挂单量数据，bidx_price bidx_size askx_price askx_size
 使用polars进行高性能数据处理
 data/豆粕/2023/五档行情数据
  
@@ -110,11 +110,11 @@ def process_order_data(input_dir, output_dir):
             # 数据预处理
             df = preprocess_data(df)
             
-            # 按分钟聚合数据
+            # 按30秒聚合数据
             result_df = aggregate_by_minute(df)
             
             # 生成输出文件名
-            output_filename = os.path.basename(csv_file).replace('.csv', '_minute.csv')
+            output_filename = os.path.basename(csv_file).replace('.csv', '_30s.csv')
             output_path = os.path.join(output_dir, output_filename)
             
             # 保存结果
@@ -157,82 +157,198 @@ def preprocess_data(df):
 
 def aggregate_by_minute(df):
     """
-    按分钟聚合数据（polars版本）
-    
+    按30秒聚合数据（polars版本），以价格为键构建平均订单簿
+
+    聚合规则（微观结构严谨做法）：
+    1. 收集该30秒时间窗口内所有出现过的价格
+    2. 对每个价格计算时间加权平均委托量
+    3. 构建30秒级别的"平均 order book"
+    4. 按价格排序后取前5档（买方从高到低，卖方从低到高）
+
     Args:
         df: 预处理后的DataFrame
-        
+
     Returns:
         聚合后的DataFrame
     """
-    
-    # 提取分钟时间戳
+
+    # 提取30秒时间戳
     df = df.with_columns(
-        pl.col("datetime").dt.truncate("1m").alias("minute")
+        pl.col("datetime").dt.truncate("30s").alias("minute")
     )
-    
-    # 按分钟分组，获取每分钟的最大时间戳
-    max_minute_stats = df.group_by("minute").agg(       
-        pl.col("datetime").max().alias("max_datetime")
-    )
-    
-    # 只保留每分钟 datetime 最大的行（最后一行）
-    df = df.join(max_minute_stats, on="minute")
-    df = df.filter(pl.col("datetime") == pl.col("max_datetime"))
-    
-    # 计算连续分钟标志
+
+    # 按时间窗口和datetime排序，确保时间顺序正确
+    df = df.sort(["minute", "datetime"])
+
+    # 计算每个快照的持续时间（秒，使用毫秒精度）
     df = df.with_columns([
-        # 获取前一行的分钟时间戳
-        pl.col("minute").shift(1).alias("prev_minute"),
-        # 计算当前分钟和前一分钟的差值（以分钟为单位）
-        (pl.col("minute") - pl.col("minute").shift(1)).dt.total_minutes().alias("minute_diff")
+        pl.when(
+            pl.col("datetime").shift(-1).over("minute").is_not_null()
+        ).then(
+            # 不是最后一个快照：计算到下一个快照的时间（毫秒转秒）
+            (pl.col("datetime").shift(-1).over("minute") - pl.col("datetime")).dt.total_milliseconds() / 1000.0
+        ).otherwise(
+            # 最后一个快照：计算到时间窗口结束的时间（毫秒转秒）
+            ((pl.col("minute") + pl.duration(seconds=30)) - pl.col("datetime")).dt.total_milliseconds() / 1000.0
+        ).alias("duration")
     ])
-    
-    # 判断是否为连续的一分钟（差值等于1分钟）
-    df = df.with_columns([
-        pl.when(pl.col("minute_diff") == 1)
+
+    # 保存每个30秒时间窗口的最后时间戳，用于后续合并
+    minute_datetime = df.group_by("minute").agg(
+        pl.col("datetime").last().alias("datetime")
+    )
+
+    # ========== 处理买方订单簿 ==========
+    # 将5档买价买量展开成长格式
+    bid_dfs = []
+    for i in range(1, 6):
+        bid_price_col = f"BidPrice{i}"
+        bid_volume_col = f"BidVolume{i}"
+        if bid_price_col in df.columns and bid_volume_col in df.columns:
+            bid_df = df.select([
+                "minute",
+                "duration",
+                pl.col(bid_price_col).alias("price"),
+                pl.col(bid_volume_col).alias("volume")
+            ]).filter(
+                # 过滤无效价格
+                pl.col("price").is_not_null() & (pl.col("price") > 0) &
+                pl.col("volume").is_not_null() & (pl.col("volume") > 0)
+            )
+            bid_dfs.append(bid_df)
+
+    if bid_dfs:
+        # 合并所有买方数据
+        all_bids = pl.concat(bid_dfs)
+
+        # 按时间窗口+价格聚合，计算时间加权平均委托量
+        bid_agg = all_bids.group_by(["minute", "price"]).agg([
+            ((pl.col("volume") * pl.col("duration")).sum() /
+             pl.col("duration").sum()).round(0).cast(pl.Int64).alias("volume")
+        ])
+        print(bid_agg.head(20))
+
+        # 按时间窗口分组，价格从高到低排序，添加档位排名
+        bid_agg = bid_agg.sort(["minute", "price"], descending=[False, True])
+        bid_agg = bid_agg.with_columns(
+            (pl.int_range(pl.len()).over("minute") + 1).alias("level")
+        ).filter(pl.col("level") <= 5)
+        print(bid_agg.head(20))
+        # 转换为宽格式：为每个档位创建价格和数量列
+        bid_wide = bid_agg.pivot(
+            index="minute",
+            columns="level",
+            values=["price", "volume"]
+        )
+
+        # 重命名列：price_1 -> bid1_price, volume_1 -> bid1_size
+        rename_map = {}
+        for i in range(1, 6):
+            if f"price_{i}" in bid_wide.columns:
+                rename_map[f"price_{i}"] = f"bid{i}_price"
+            if f"volume_{i}" in bid_wide.columns:
+                rename_map[f"volume_{i}"] = f"bid{i}_size"
+        if rename_map:
+            bid_wide = bid_wide.rename(rename_map)
+    else:
+        bid_wide = None
+
+    # ========== 处理卖方订单簿 ==========
+    # 将5档卖价卖量展开成长格式
+    ask_dfs = []
+    for i in range(1, 6):
+        ask_price_col = f"AskPrice{i}"
+        ask_volume_col = f"AskVolume{i}"
+        if ask_price_col in df.columns and ask_volume_col in df.columns:
+            ask_df = df.select([
+                "minute",
+                "duration",
+                pl.col(ask_price_col).alias("price"),
+                pl.col(ask_volume_col).alias("volume")
+            ]).filter(
+                # 过滤无效价格
+                pl.col("price").is_not_null() & (pl.col("price") > 0) &
+                pl.col("volume").is_not_null() & (pl.col("volume") > 0)
+            )
+            ask_dfs.append(ask_df)
+
+    if ask_dfs:
+        # 合并所有卖方数据
+        all_asks = pl.concat(ask_dfs)
+
+        # 按时间窗口+价格聚合，计算时间加权平均委托量
+        ask_agg = all_asks.group_by(["minute", "price"]).agg([
+            ((pl.col("volume") * pl.col("duration")).sum() /
+             pl.col("duration").sum()).round(0).cast(pl.Int64).alias("volume")
+        ])
+
+        # 按时间窗口分组，价格从低到高排序，添加档位排名
+        ask_agg = ask_agg.sort(["minute", "price"], descending=[False, False])
+        ask_agg = ask_agg.with_columns(
+            (pl.int_range(pl.len()).over("minute") + 1).alias("level")
+        ).filter(pl.col("level") <= 5)
+
+        # 转换为宽格式
+        ask_wide = ask_agg.pivot(
+            index="minute",
+            columns="level",
+            values=["price", "volume"]
+        )
+
+        # 重命名列：price_1 -> ask1_price, volume_1 -> ask1_size
+        rename_map = {}
+        for i in range(1, 6):
+            if f"price_{i}" in ask_wide.columns:
+                rename_map[f"price_{i}"] = f"ask{i}_price"
+            if f"volume_{i}" in ask_wide.columns:
+                rename_map[f"volume_{i}"] = f"ask{i}_size"
+        if rename_map:
+            ask_wide = ask_wide.rename(rename_map)
+    else:
+        ask_wide = None
+
+    # ========== 合并买卖双方数据 ==========
+    result_df = minute_datetime
+
+    if bid_wide is not None:
+        result_df = result_df.join(bid_wide, on="minute", how="left")
+
+    if ask_wide is not None:
+        result_df = result_df.join(ask_wide, on="minute", how="left")
+
+    # 按时间排序
+    result_df = result_df.sort("datetime")
+
+    # 计算连续时间窗口标志
+    result_df = result_df.with_columns([
+        # 计算当前时间窗口和前一时间窗口的差值（以秒为单位）
+        (pl.col("minute") - pl.col("minute").shift(1)).dt.total_seconds().alias("minute_diff")
+    ])
+
+    # 判断是否为连续的30秒窗口（差值等于30秒）
+    result_df = result_df.with_columns([
+        pl.when(pl.col("minute_diff") == 30)
           .then(1)
           .otherwise(0)
           .alias("is_consecutive_minute")
     ])
-    
-    # 原始字段名映射到目标字段名
-    field_mapping = {
-        # 买方五档价格
-        "BidPrice1": "bid1_price", "BidPrice2": "bid2_price", "BidPrice3": "bid3_price", 
-        "BidPrice4": "bid4_price", "BidPrice5": "bid5_price",
-        # 买方五档订单量
-        "BidVolume1": "bid1_size", "BidVolume2": "bid2_size", "BidVolume3": "bid3_size",
-        "BidVolume4": "bid4_size", "BidVolume5": "bid5_size",
-        # 卖方五档价格
-        "AskPrice1": "ask1_price", "AskPrice2": "ask2_price", "AskPrice3": "ask3_price",
-        "AskPrice4": "ask4_price", "AskPrice5": "ask5_price",
-        # 卖方五档订单量
-        "AskVolume1": "ask1_size", "AskVolume2": "ask2_size", "AskVolume3": "ask3_size",
-        "AskVolume4": "ask4_size", "AskVolume5": "ask5_size"
-    }
-    
-    # 重命名字段
-    for old_name, new_name in field_mapping.items():
-        if old_name in df.columns:
-            df = df.rename({old_name: new_name})
-    
+
     # 定义需要的字段列表
     required_columns = ["datetime", "minute", "is_consecutive_minute"]
-    
+
     # 添加买方五档价格和订单量字段
     for i in range(1, 6):
         required_columns.extend([f"bid{i}_price", f"bid{i}_size"])
-    
+
     # 添加卖方五档价格和订单量字段
     for i in range(1, 6):
         required_columns.extend([f"ask{i}_price", f"ask{i}_size"])
-    
+
     # 只返回指定的字段（只保留存在的字段）
-    available_columns = [col for col in required_columns if col in df.columns]
-    df = df.select(available_columns)
-    
-    return df
+    available_columns = [col for col in required_columns if col in result_df.columns]
+    result_df = result_df.select(available_columns)
+
+    return result_df
 
 def process_all_years(base_dir, output_base_dir):
     """
