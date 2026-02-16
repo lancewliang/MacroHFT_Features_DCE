@@ -75,6 +75,11 @@ data/豆粕/2023/五档行情数据
 | `LifeHighPrice` | Float | 历史最高价 | - |
 | `LifeLowPrice` | Float | 历史最低价 | - |
 
+输出字段：
+时间档位 datetime,minute,
+是否连续 is_consecutive_minute,
+委托价格：open_price,high_price,low_price,close_price,
+5档委托：bid1_price,bid1_size,bid2_price,bid2_size,bid3_price,bid3_size,bid4_price,bid4_size,bid5_price,bid5_size,ask1_price,ask1_size,ask2_price,ask2_size,ask3_price,ask3_size,ask4_price,ask4_size,ask5_price,ask5_size
 """
 
 import polars as pl
@@ -193,10 +198,42 @@ def aggregate_by_minute(df):
         ).alias("duration")
     ])
 
-    # 保存每个30秒时间窗口的最后时间戳，用于后续合并
-    minute_datetime = df.group_by("minute").agg(
-        pl.col("datetime").last().alias("datetime")
-    )
+    # 保存每个30秒时间窗口的最后时间戳、开盘价和收盘价，用于后续合并
+    minute_datetime = df.group_by("minute").agg([
+        pl.col("datetime").last().alias("datetime"),
+        pl.col("LastPrice").first().alias("open_price"),  # 取第一条记录的LastPrice作为开盘价
+        pl.col("LastPrice").last().alias("close_price")   # 取最后一条记录的LastPrice作为收盘价
+    ])
+
+    # ========== 计算30秒窗口内的最高价和最低价 ==========
+    # 收集所有买价
+    all_bid_prices = []
+    for i in range(1, 6):
+        bid_price_col = f"BidPrice{i}"
+        if bid_price_col in df.columns:
+            all_bid_prices.append(pl.col(bid_price_col))
+
+    # 收集所有卖价
+    all_ask_prices = []
+    for i in range(1, 6):
+        ask_price_col = f"AskPrice{i}"
+        if ask_price_col in df.columns:
+            all_ask_prices.append(pl.col(ask_price_col))
+
+    # 合并所有价格列，计算每行的最高价和最低价
+    if all_bid_prices and all_ask_prices:
+        df_with_prices = df.with_columns([
+            pl.max_horizontal(all_bid_prices + all_ask_prices).alias("row_max_price"),
+            pl.min_horizontal(all_bid_prices + all_ask_prices).alias("row_min_price")
+        ])
+
+        # 按时间窗口聚合，计算整个窗口的最高价和最低价
+        high_low_prices = df_with_prices.group_by("minute").agg([
+            pl.col("row_max_price").max().alias("high_price"),
+            pl.col("row_min_price").min().alias("low_price")
+        ])
+    else:
+        high_low_prices = None
 
     # ========== 处理买方订单簿 ==========
     # 将5档买价买量展开成长格式
@@ -310,6 +347,10 @@ def aggregate_by_minute(df):
     # ========== 合并买卖双方数据 ==========
     result_df = minute_datetime
 
+    # 合并最高价和最低价
+    if high_low_prices is not None:
+        result_df = result_df.join(high_low_prices, on="minute", how="left")
+
     if bid_wide is not None:
         result_df = result_df.join(bid_wide, on="minute", how="left")
 
@@ -334,7 +375,7 @@ def aggregate_by_minute(df):
     ])
 
     # 定义需要的字段列表
-    required_columns = ["datetime", "minute", "is_consecutive_minute"]
+    required_columns = ["datetime", "minute", "is_consecutive_minute", "open_price", "high_price", "low_price", "close_price"]
 
     # 添加买方五档价格和订单量字段
     for i in range(1, 6):
