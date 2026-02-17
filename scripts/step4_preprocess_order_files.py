@@ -236,7 +236,7 @@ def aggregate_by_minute(df):
     else:
         high_low_prices = None
 
-    # ========== 处理买方订单簿 ==========
+    # ========== 处理买方订单簿（聚合阶段）==========
     # 将5档买价买量展开成长格式
     bid_dfs = []
     for i in range(1, 6):
@@ -255,17 +255,65 @@ def aggregate_by_minute(df):
             )
             bid_dfs.append(bid_df)
 
+    bid_agg = None
     if bid_dfs:
-        # 合并所有买方数据
         all_bids = pl.concat(bid_dfs)
-
-        # 按时间窗口+价格聚合，计算时间加权平均委托量
         bid_agg = all_bids.group_by(["minute", "price"]).agg([
             ((pl.col("volume") * pl.col("duration")).sum() /
              pl.col("duration").sum()).round(0).cast(pl.Int64).alias("volume")
         ])
 
+    # ========== 处理卖方订单簿（聚合阶段）==========
+    # 将5档卖价卖量展开成长格式
+    ask_dfs = []
+    for i in range(1, 6):
+        ask_price_col = f"AskPrice{i}"
+        ask_volume_col = f"AskVolume{i}"
+        if ask_price_col in df.columns and ask_volume_col in df.columns:
+            ask_df = df.select([
+                "minute",
+                "duration",
+                pl.col(ask_price_col).alias("price"),
+                pl.col(ask_volume_col).alias("volume")
+            ]).filter(
+                # 过滤无效价格
+                pl.col("price").is_not_null() & (pl.col("price") > 0) &
+                pl.col("volume").is_not_null() & (pl.col("volume") > 0)
+            )
+            ask_dfs.append(ask_df)
 
+    ask_agg = None
+    if ask_dfs:
+        all_asks = pl.concat(ask_dfs)
+        ask_agg = all_asks.group_by(["minute", "price"]).agg([
+            ((pl.col("volume") * pl.col("duration")).sum() /
+             pl.col("duration").sum()).round(0).cast(pl.Int64).alias("volume")
+        ])
+
+    # ========== 过滤交叉价格（确保买一价 < 卖一价）==========
+    # 30秒聚合时，不同时刻的买价和卖价价格池合并后可能出现交叉：
+    # 某时刻的买价高于另一时刻的卖价，导致最终 bid1_price >= ask1_price。
+    # 修复：先去掉高于（或等于）卖方最低价的买价，再去掉低于（或等于）买方最高价的卖价。
+    if bid_agg is not None and ask_agg is not None:
+        # 第一步：过滤买价，去掉 >= 卖方最低价的买价
+        min_ask_per_minute = ask_agg.group_by("minute").agg(
+            pl.col("price").min().alias("min_ask_price")
+        )
+        bid_agg = bid_agg.join(min_ask_per_minute, on="minute", how="left").filter(
+            pl.col("min_ask_price").is_null() | (pl.col("price") < pl.col("min_ask_price"))
+        ).drop("min_ask_price")
+
+        # 第二步：过滤卖价，去掉 <= 过滤后买方最高价的卖价
+        max_bid_per_minute = bid_agg.group_by("minute").agg(
+            pl.col("price").max().alias("max_bid_price")
+        )
+        ask_agg = ask_agg.join(max_bid_per_minute, on="minute", how="left").filter(
+            pl.col("max_bid_price").is_null() | (pl.col("price") > pl.col("max_bid_price"))
+        ).drop("max_bid_price")
+
+    # ========== 构建买方宽格式 ==========
+    bid_wide = None
+    if bid_agg is not None and bid_agg.height > 0:
         # 按时间窗口分组，价格从高到低排序，添加档位排名
         bid_agg = bid_agg.sort(["minute", "price"], descending=[False, True])
         bid_agg = bid_agg.with_columns(
@@ -288,38 +336,10 @@ def aggregate_by_minute(df):
                 rename_map[f"volume_{i}"] = f"bid{i}_size"
         if rename_map:
             bid_wide = bid_wide.rename(rename_map)
-    else:
-        bid_wide = None
 
-    # ========== 处理卖方订单簿 ==========
-    # 将5档卖价卖量展开成长格式
-    ask_dfs = []
-    for i in range(1, 6):
-        ask_price_col = f"AskPrice{i}"
-        ask_volume_col = f"AskVolume{i}"
-        if ask_price_col in df.columns and ask_volume_col in df.columns:
-            ask_df = df.select([
-                "minute",
-                "duration",
-                pl.col(ask_price_col).alias("price"),
-                pl.col(ask_volume_col).alias("volume")
-            ]).filter(
-                # 过滤无效价格
-                pl.col("price").is_not_null() & (pl.col("price") > 0) &
-                pl.col("volume").is_not_null() & (pl.col("volume") > 0)
-            )
-            ask_dfs.append(ask_df)
-
-    if ask_dfs:
-        # 合并所有卖方数据
-        all_asks = pl.concat(ask_dfs)
-
-        # 按时间窗口+价格聚合，计算时间加权平均委托量
-        ask_agg = all_asks.group_by(["minute", "price"]).agg([
-            ((pl.col("volume") * pl.col("duration")).sum() /
-             pl.col("duration").sum()).round(0).cast(pl.Int64).alias("volume")
-        ])
-
+    # ========== 构建卖方宽格式 ==========
+    ask_wide = None
+    if ask_agg is not None and ask_agg.height > 0:
         # 按时间窗口分组，价格从低到高排序，添加档位排名
         ask_agg = ask_agg.sort(["minute", "price"], descending=[False, False])
         ask_agg = ask_agg.with_columns(
@@ -342,8 +362,6 @@ def aggregate_by_minute(df):
                 rename_map[f"volume_{i}"] = f"ask{i}_size"
         if rename_map:
             ask_wide = ask_wide.rename(rename_map)
-    else:
-        ask_wide = None
 
     # ========== 合并买卖双方数据 ==========
     result_df = minute_datetime
