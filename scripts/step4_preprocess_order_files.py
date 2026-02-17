@@ -86,6 +86,7 @@ import polars as pl
 import os
 import glob
 from datetime import datetime
+from multiprocessing import Pool, cpu_count
 
 def process_order_data(input_dir, output_dir):
     """
@@ -391,45 +392,98 @@ def aggregate_by_minute(df):
 
     return result_df
 
-def process_all_years(base_dir, output_base_dir):
+def process_single_year(args):
     """
-    处理所有年份的数据
-    
+    处理单个年份的数据（用于多进程）
+
+    Args:
+        args: 包含 (year_dir, output_base_dir) 的元组
+
+    Returns:
+        处理结果的元组 (year_name, success, message)
+    """
+    year_dir, output_base_dir = args
+    year_name = os.path.basename(year_dir)
+    order_dir = os.path.join(year_dir, "五档行情数据")
+
+    try:
+        if os.path.exists(order_dir):
+            print(f"\n[进程 {os.getpid()}] 开始处理年份: {year_name}")
+
+            # 创建对应的输出目录
+            output_dir = os.path.join(output_base_dir, year_name, "orderbook")
+
+            # 处理该年份的数据
+            process_order_data(order_dir, output_dir)
+
+            print(f"[进程 {os.getpid()}] 完成处理年份: {year_name}")
+            return (year_name, True, "成功")
+        else:
+            return (year_name, False, f"目录不存在: {order_dir}")
+    except Exception as e:
+        return (year_name, False, f"处理失败: {str(e)}")
+
+
+def process_all_years(base_dir, output_base_dir, num_processes=None):
+    """
+    使用多进程并行处理所有年份的数据
+
     Args:
         base_dir: 基础数据目录 (data/豆粕/)
         output_base_dir: 输出基础目录
+        num_processes: 进程数量，默认为 CPU 核心数
     """
-    
+
     # 查找所有年份目录
     year_pattern = os.path.join(base_dir, "*")
-    year_dirs = glob.glob(year_pattern)
-    
-    for year_dir in year_dirs:
-        if os.path.isdir(year_dir):
-            year_name = os.path.basename(year_dir)
-            order_dir = os.path.join(year_dir, "五档行情数据")
-            
-            if os.path.exists(order_dir):
-                print(f"\n处理年份: {year_name}")
-                
-                # 创建对应的输出目录
-                output_dir = os.path.join(output_base_dir, year_name, "orderbook")
-                
-                # 处理该年份的数据
-                process_order_data(order_dir, output_dir)
+    year_dirs = [d for d in glob.glob(year_pattern) if os.path.isdir(d)]
+
+    if not year_dirs:
+        print("未找到年份目录")
+        return
+
+    # 准备参数列表
+    year_args = [(year_dir, output_base_dir) for year_dir in year_dirs]
+
+    # 确定进程数量
+    if num_processes is None:
+        num_processes = min(cpu_count(), len(year_dirs))
+
+    print(f"找到 {len(year_dirs)} 个年份目录，将使用 {num_processes} 个进程并行处理")
+
+    # 使用进程池并行处理
+    with Pool(processes=num_processes) as pool:
+        results = pool.map(process_single_year, year_args)
+
+    # 输出处理结果摘要
+    print("\n" + "="*60)
+    print("处理结果摘要:")
+    print("="*60)
+    success_count = 0
+    for year_name, success, message in results:
+        status = "✓" if success else "✗"
+        print(f"{status} {year_name}: {message}")
+        if success:
+            success_count += 1
+
+    print(f"\n总计: {success_count}/{len(results)} 个年份处理成功")
 
 def main():
     """主函数"""
-    
+
     # 设置路径
     base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
     output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
-    
+
+    # 设置进程数量（None 表示使用 CPU 核心数，或手动指定如 4）
+    num_processes = None  # 自动使用 CPU 核心数
+
     print("开始处理期货五档行情统计数据...")
-    
-    # 处理所有年份的数据
-    process_all_years(base_data_dir, output_base_dir)
-    
+    print(f"系统 CPU 核心数: {cpu_count()}")
+
+    # 使用多进程处理所有年份的数据
+    process_all_years(base_data_dir, output_base_dir, num_processes=num_processes)
+
     print("\n数据处理完成!")
 
 if __name__ == "__main__":
