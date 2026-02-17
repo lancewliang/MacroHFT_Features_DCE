@@ -123,7 +123,15 @@ def process_order_data(input_dir, output_dir):
             output_filename = os.path.basename(csv_file).replace('.csv', '_30s.csv')
             output_path = os.path.join(output_dir, output_filename)
             
-            # 保存结果
+            # 过滤 open/high/low/close 全为 null 的行后保存
+            result_df = result_df.filter(
+                ~pl.all_horizontal(
+                    pl.col("open_price").is_null(),
+                    pl.col("high_price").is_null(),
+                    pl.col("low_price").is_null(),
+                    pl.col("close_price").is_null(),
+                )
+            )
             result_df.write_csv(output_path)
             print(f"已保存处理结果: {output_path}")
             # exit(0)

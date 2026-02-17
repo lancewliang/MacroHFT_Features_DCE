@@ -270,7 +270,7 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
-    test_date = "2023-04-03"
+    test_date = "2023-03-03"
     print(f"\n{'='*60}")
     print(f"测试加载单日 orderbook 数据")
     print(f"日期: {test_date}")
@@ -303,7 +303,7 @@ if __name__ == "__main__":
     print(f"\n{'='*60}")
     print("测试日期范围数据加载")
     print(f"{'='*60}")
-    range_df = load_and_merge_date_range("2023-04-03", "2023-04-06")
+    range_df = load_and_merge_date_range("2023-03-03", "2023-04-06")
     if range_df is not None:
         print(f"\n日期范围数据预览:")
         print(range_df.head())
