@@ -125,7 +125,7 @@ def process_order_data(input_dir, output_dir):
             # 保存结果
             result_df.write_csv(output_path)
             print(f"已保存处理结果: {output_path}")
-            exit(0)
+            # exit(0)
         except Exception as e:
             print(f"处理文件 {csv_file} 时出错: {str(e)}")
             continue
@@ -263,14 +263,14 @@ def aggregate_by_minute(df):
             ((pl.col("volume") * pl.col("duration")).sum() /
              pl.col("duration").sum()).round(0).cast(pl.Int64).alias("volume")
         ])
-        print(bid_agg.head(20))
+
 
         # 按时间窗口分组，价格从高到低排序，添加档位排名
         bid_agg = bid_agg.sort(["minute", "price"], descending=[False, True])
         bid_agg = bid_agg.with_columns(
             (pl.int_range(pl.len()).over("minute") + 1).alias("level")
         ).filter(pl.col("level") <= 5)
-        print(bid_agg.head(20))
+
         # 转换为宽格式：为每个档位创建价格和数量列
         bid_wide = bid_agg.pivot(
             index="minute",
