@@ -5,6 +5,7 @@
 
 import polars as pl
 import logging
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 import argparse
@@ -121,7 +122,7 @@ def generate_features_single_file(
             logger.info(f"批次 {batch_num} 处理完成，{len(features_df)} 行")
 
         except Exception as e:
-            logger.error(f"批次 {batch_num} 处理失败: {str(e)}")
+            logger.error(f"批次 {batch_num} 处理失败: {str(e)}\n{traceback.format_exc()}")
             continue
 
     # 合并所有批次

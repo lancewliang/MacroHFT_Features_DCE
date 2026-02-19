@@ -380,9 +380,12 @@ def calculate_trend_features(df: pl.DataFrame, window: int = 60) -> pl.DataFrame
         # 计算滚动均值和标准差
         rolling_mean = pl.col(col).rolling_mean(window_size=window)
         rolling_std = pl.col(col).rolling_std(window_size=window)
-
+        # t_rolling_mean = rolling_mean.alias(f"{col}_trend_rolling_mean_{window}")
+        # t_rolling_std = rolling_std.alias(f"{col}_trend_rolling_std_{window}")
         # 计算趋势因子: (y - rolling_mean) / rolling_std
-        trend = ((pl.col(col) - rolling_mean) / rolling_std).alias(f"{col}_trend_{window}")
+        trend = ((pl.col(col) - rolling_mean) / (rolling_std + 1e-8)).alias(f"{col}_trend_{window}")
+        # trend_exprs.append(t_rolling_mean)
+        # trend_exprs.append(t_rolling_std)
         trend_exprs.append(trend)
 
     df = df.with_columns(trend_exprs)

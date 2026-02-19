@@ -172,7 +172,8 @@ def load_and_merge_date_range(
     if contract is not None:
         logger.info(f"使用固定合约: {contract}")
 
-    all_dfs = []
+    # 存 (date_str, df) 以便后续打印问题文件
+    all_dfs: list[tuple[str, pl.DataFrame]] = []
     for i, date_str in enumerate(date_list):
         if SHOW_PROGRESS and (i + 1) % 10 == 0:
             logger.info(f"进度: {i + 1}/{len(date_list)} 天")
@@ -180,14 +181,43 @@ def load_and_merge_date_range(
         daily_df = load_daily_orderbook_data(date_str, contract)
         if daily_df is not None:
             daily_df = daily_df.with_columns(pl.lit(date_str).alias("date"))
-            all_dfs.append(daily_df)
+            all_dfs.append((date_str, daily_df))
 
     if not all_dfs:
         logger.warning("没有加载到任何数据")
         return None
 
-    logger.info(f"合并 {len(all_dfs)} 天的数据")
-    merged_df = pl.concat(all_dfs)
+    # 扫描所有文件的列类型，找出类型冲突的列
+    col_types: dict[str, set] = {}
+    for date_str, df in all_dfs:
+        for col, dtype in df.schema.items():
+            col_types.setdefault(col, set()).add(dtype)
+
+    conflict_cols = {col: types for col, types in col_types.items() if len(types) > 1}
+    if conflict_cols:
+        logger.warning(f"发现 {len(conflict_cols)} 个列存在类型冲突，将统一转换为 Float64")
+        for col, types in conflict_cols.items():
+            logger.warning(f"  列 '{col}' 存在多种类型: {types}")
+            for date_str, df in all_dfs:
+                if col in df.schema:
+                    logger.warning(f"    {date_str}: {df.schema[col]}")
+
+        fixed_dfs = []
+        for date_str, df in all_dfs:
+            cols_to_cast = [
+                col for col in conflict_cols
+                if col in df.schema and df.schema[col] != pl.Float64
+            ]
+            if cols_to_cast:
+                df = df.with_columns([pl.col(col).cast(pl.Float64) for col in cols_to_cast])
+                logger.info(f"  {date_str} 已转换列: {cols_to_cast}")
+            fixed_dfs.append(df)
+        dfs_to_concat = fixed_dfs
+    else:
+        dfs_to_concat = [df for _, df in all_dfs]
+
+    logger.info(f"合并 {len(dfs_to_concat)} 天的数据")
+    merged_df = pl.concat(dfs_to_concat)
     logger.info(f"总行数: {len(merged_df)}")
     return merged_df
 
