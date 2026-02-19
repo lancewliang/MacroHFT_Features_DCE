@@ -50,7 +50,7 @@ TIMEFRAME = "1m"  # 时间粒度
 
 # ==================== 数据时间范围配置 ====================
 START_DATE = "2023-01-01"
-END_DATE = "2023-01-05"
+END_DATE = "2025-12-31"
 
 # ==================== 文件命名模板 ====================
 # DCE数据目录结构: data/豆粕/2023/01/20230103/五档行情数据/m2301.csv
@@ -63,7 +63,7 @@ DCE_FILENAME_TEMPLATE = "{contract}.csv"
 FEATURES_OUTPUT_DIR = OUTPUT_ROOT / "features"
 
 # 输出文件格式
-OUTPUT_FORMAT = "csv"  # 可选: "parquet", "feather" 或 "csv"
+OUTPUT_FORMAT = "feather"  # 可选: "parquet", "feather" 或 "csv"
 
 # 输出文件命名策略
 OUTPUT_STRATEGY = "single"  # 可选: "single" (单文件) 或 "monthly" (按月分割)
