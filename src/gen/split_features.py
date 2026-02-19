@@ -39,6 +39,14 @@ def parse_date_ranges(ranges_str: str) -> List[Tuple[str, str]]:
             if len(parts) == 2:
                 start_date = parts[0].strip()
                 end_date = parts[1].strip()
+                try:
+                    datetime.strptime(start_date, "%Y%m%d")
+                    datetime.strptime(end_date, "%Y%m%d")
+                except ValueError as e:
+                    raise ValueError(
+                        f"无效的日期范围 '{range_part}': {e}\n"
+                        f"请检查日期是否存在 (例如: 2月没有29日(非闰年), 4/6/9/11月没有31日)"
+                    )
                 ranges.append((start_date, end_date))
     return ranges
 
@@ -82,15 +90,20 @@ def split_features(
         logger.info(f"\n处理时间段: {start_date} 至 {end_date}")
 
         # 转换日期字符串为 datetime
-        start_dt = datetime.strptime(start_date, "%Y%m%d")
-        end_dt = datetime.strptime(end_date, "%Y%m%d").replace(hour=23, minute=59, second=59)
+        try:
+            start_dt = datetime.strptime(start_date, "%Y%m%d")
+            end_dt = datetime.strptime(end_date, "%Y%m%d").replace(hour=23, minute=59, second=59)
+        except ValueError as e:
+            logger.error(f"无效的日期 '{start_date}' 或 '{end_date}': {e}")
+            logger.error("请检查日期是否存在 (例如: 2月没有29日(非闰年), 4/6/9/11月没有31日)")
+            continue
 
         # 过滤数据
         filtered_df = df.filter(
             (pl.col(time_column) >= start_dt) &
             (pl.col(time_column) <= end_dt)
         )
-
+        logger.info(f"该时间段数据行数: {filtered_df.head(10)}")
         rows_count = len(filtered_df)
         logger.info(f"该时间段数据行数: {rows_count}")
 
