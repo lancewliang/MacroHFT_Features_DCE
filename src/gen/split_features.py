@@ -103,6 +103,9 @@ def split_features(
             (pl.col(time_column) >= start_dt) &
             (pl.col(time_column) <= end_dt)
         )
+        filtered_df = filtered_df.with_columns(
+            pl.col('close_price').alias("close"),           
+        )
         logger.info(f"该时间段数据行数: {filtered_df.head(10)}")
         rows_count = len(filtered_df)
         logger.info(f"该时间段数据行数: {rows_count}")
@@ -163,7 +166,14 @@ def auto_split_by_months(
     logger.info("\n按月分割数据...")
     df_with_month = df.with_columns(
         pl.col(time_column).dt.strftime("%Y%m").alias("month")
+    ) 
+    df_with_month = df_with_month.with_columns(
+        pl.col('close_price').alias("close"),
+        pl.col('open_price').alias("open"),
+        pl.col('high_price').alias("high"),
+        pl.col('low_price').alias("low")
     )
+    print("close price check "+df_with_month.head(10))
 
     # 获取所有唯一的月份
     months = df_with_month["month"].unique().sort()

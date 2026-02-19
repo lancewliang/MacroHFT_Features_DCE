@@ -109,7 +109,8 @@ def generate_features_single_file(
                 continue
 
             features_df = calculate_all_features(merged_df)
-
+          
+           
             # 删除包含 nan 值的行（由周期性因子导致）
             rows_before = len(features_df)
             features_df = features_df.drop_nulls()
