@@ -283,7 +283,7 @@ def process_single_year(args):
             print(f"\n[进程 {os.getpid()}] 开始处理年份: {year_name}")
 
             # 创建对应的输出目录
-            output_dir = os.path.join(output_base_dir, year_name, "orderbook")
+            output_dir = os.path.join(output_base_dir, year_name, "orderbook", interval)
 
             # 处理该年份的数据
             process_order_data(order_dir, output_dir, interval=interval)
@@ -349,7 +349,7 @@ def main():
     output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
 
     # 设置聚合间隔："30s" 或 "1m"
-    interval = "30s"
+    interval = "1m"
 
     # 设置进程数量（None 表示使用 CPU 核心数，或手动指定如 4）
     num_processes = None  # 自动使用 CPU 核心数
