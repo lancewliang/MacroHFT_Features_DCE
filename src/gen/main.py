@@ -21,6 +21,7 @@ from config import (
     LOG_LEVEL,
     LOG_FILE,
     LOG_DIR,
+    TIMEFRAME,
     ENABLE_DATA_VALIDATION,
     get_output_filepath,
     ensure_directories
@@ -65,7 +66,8 @@ def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
 def generate_features_single_file(
     start_date: str,
     end_date: str,
-    batch_size: int = BATCH_SIZE_DAYS
+    batch_size: int = BATCH_SIZE_DAYS,
+    timeframe: str = TIMEFRAME,
 ) -> bool:
     """
     生成单个特征文件（分批处理后合并）
@@ -74,12 +76,13 @@ def generate_features_single_file(
         start_date: 起始日期
         end_date: 结束日期
         batch_size: 批处理大小（天数）
+        timeframe: 时间粒度，如 '30s' 或 '1m'
 
     Returns:
         是否成功
     """
     logger = logging.getLogger(__name__)
-    logger.info("使用单文件策略生成特征")
+    logger.info(f"使用单文件策略生成特征 (timeframe={timeframe})")
 
     # 生成日期范围
     all_dates = generate_date_range(start_date, end_date)
@@ -102,7 +105,7 @@ def generate_features_single_file(
         # 加载和处理数据
         try:
             # 使用新的加载和合并函数
-            merged_df = load_and_merge_date_range(batch_start, batch_end)
+            merged_df = load_and_merge_date_range(batch_start, batch_end, timeframe=timeframe)
 
             if merged_df is None:
                 logger.warning(f"批次 {batch_num} 数据加载失败，跳过")
@@ -135,7 +138,7 @@ def generate_features_single_file(
     final_df = pl.concat(batch_dfs)
 
     # 保存最终结果
-    output_path = get_output_filepath(start_date=start_date, end_date=end_date)
+    output_path = get_output_filepath(start_date=start_date, end_date=end_date, timeframe=timeframe)
     logger.info(f"保存最终结果到: {output_path}")
 
     if OUTPUT_FORMAT == "parquet":
@@ -162,6 +165,9 @@ def main():
                         help=f'输出策略 (默认: {OUTPUT_STRATEGY})')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE_DAYS,
                         help=f'批处理大小（天数） (默认: {BATCH_SIZE_DAYS})')
+    parser.add_argument('--timeframe', type=str, default=TIMEFRAME,
+                        choices=['30s', '1m'],
+                        help=f'时间粒度 (默认: {TIMEFRAME})')
     parser.add_argument('--log-level', type=str, default=LOG_LEVEL,
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help=f'日志级别 (默认: {LOG_LEVEL})')
@@ -181,6 +187,7 @@ def main():
     logger.info("="*80)
     logger.info(f"起始日期: {args.start_date}")
     logger.info(f"结束日期: {args.end_date}")
+    logger.info(f"时间粒度: {args.timeframe}")
     logger.info(f"输出策略: {args.strategy}")
     logger.info(f"批处理大小: {args.batch_size} 天")
     logger.info(f"输出格式: {OUTPUT_FORMAT}")
@@ -198,7 +205,8 @@ def main():
         success = generate_features_single_file(
             args.start_date,
             args.end_date,
-            args.batch_size
+            args.batch_size,
+            args.timeframe,
         )
         if success:
             logger.info("\n单文件生成成功")

@@ -15,6 +15,7 @@ try:
         SHOW_PROGRESS,
         DCE_BASE_PATH,
         COMMODITY,
+        TIMEFRAME,
     )
 except ImportError:
     # 回退到绝对导入（当直接运行时）
@@ -22,22 +23,24 @@ except ImportError:
         SHOW_PROGRESS,
         DCE_BASE_PATH,
         COMMODITY,
+        TIMEFRAME,
     )
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
 
-def get_orderbook_filepath(date_str: str, contract: str, commodity: str = COMMODITY) -> Path:
+def get_orderbook_filepath(date_str: str, contract: str, commodity: str = COMMODITY, timeframe: str = TIMEFRAME) -> Path:
     """
     获取 orderbook 数据文件路径
 
-    目录结构: data/品种/年份/orderbook/合约-年-月-日_30s.csv
+    目录结构: data/品种/年份/orderbook/{timeframe}/合约-年-月-日_{timeframe}.csv
 
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD' (例: '2023-01-03')
         contract: 合约代码 (例: 'm2305')
         commodity: 品种名称 (默认: 从配置读取)
+        timeframe: 时间粒度 (例: '30s' 或 '1m')
 
     Returns:
         Path: 完整文件路径
@@ -51,18 +54,19 @@ def get_orderbook_filepath(date_str: str, contract: str, commodity: str = COMMOD
     if contract is None:
         raise ValueError("合约代码不能为None")
 
-    dir_path = DCE_BASE_PATH / commodity / year / "orderbook"
-    filename = f"{contract}-{date_str}_30s.csv"
+    dir_path = DCE_BASE_PATH / commodity / year / "orderbook" / timeframe
+    filename = f"{contract}-{date_str}_{timeframe}.csv"
     return dir_path / filename
 
 
-def find_daily_contract(date_str: str, commodity: str = COMMODITY) -> Optional[str]:
+def find_daily_contract(date_str: str, commodity: str = COMMODITY, timeframe: str = TIMEFRAME) -> Optional[str]:
     """
     自动识别指定日期的合约代码（每天只有1份合约文件）
 
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD'
         commodity: 品种名称
+        timeframe: 时间粒度 (例: '30s' 或 '1m')
 
     Returns:
         合约代码，未找到返回 None
@@ -73,11 +77,11 @@ def find_daily_contract(date_str: str, commodity: str = COMMODITY) -> Optional[s
     except ValueError:
         return None
 
-    dir_path = DCE_BASE_PATH / commodity / year / "orderbook"
+    dir_path = DCE_BASE_PATH / commodity / year / "orderbook" / timeframe
     if not dir_path.exists():
         return None
 
-    csv_files = list(dir_path.glob(f"*-{date_str}_30s.csv"))
+    csv_files = list(dir_path.glob(f"*-{date_str}_{timeframe}.csv"))
     if not csv_files:
         return None
 
@@ -85,27 +89,28 @@ def find_daily_contract(date_str: str, commodity: str = COMMODITY) -> Optional[s
     return csv_files[0].stem.split('-')[0]
 
 
-def load_daily_orderbook_data(date_str: str, contract: str = None) -> Optional[pl.DataFrame]:
+def load_daily_orderbook_data(date_str: str, contract: str = None, timeframe: str = TIMEFRAME) -> Optional[pl.DataFrame]:
     """
     加载单日 orderbook 数据
 
     Args:
         date_str: 日期字符串，格式 'YYYY-MM-DD'
         contract: 合约代码 (例: 'm2305')，如果为None则自动从目录识别
+        timeframe: 时间粒度 (例: '30s' 或 '1m')
 
     Returns:
         包含 orderbook 数据的 DataFrame
     """
-    logger.info(f"加载日期 {date_str} 的 orderbook 数据")
+    logger.info(f"加载日期 {date_str} 的 orderbook 数据 (timeframe={timeframe})")
 
     if contract is None:
-        contract = find_daily_contract(date_str)
+        contract = find_daily_contract(date_str, timeframe=timeframe)
         if contract is None:
-            logger.error(f"日期 {date_str} 未找到合约文件")
+            logger.error(f"日期 {date_str} 未找到合约文件 (timeframe={timeframe})")
             return None
         logger.info(f"自动识别合约: {contract}")
 
-    filepath = get_orderbook_filepath(date_str, contract)
+    filepath = get_orderbook_filepath(date_str, contract, timeframe=timeframe)
     if not filepath.exists():
         logger.warning(f"文件不存在: {filepath}")
         return None
@@ -154,6 +159,7 @@ def load_and_merge_date_range(
     start_date: str,
     end_date: str,
     contract: str = None,
+    timeframe: str = TIMEFRAME,
 ) -> Optional[pl.DataFrame]:
     """
     加载日期范围内的 orderbook 数据
@@ -162,12 +168,13 @@ def load_and_merge_date_range(
         start_date: 起始日期 'YYYY-MM-DD'
         end_date: 结束日期 'YYYY-MM-DD'
         contract: 合约代码，如果为None则每天自动识别
+        timeframe: 时间粒度 (例: '30s' 或 '1m')
 
     Returns:
         合并后的 DataFrame
     """
     date_list = generate_date_range(start_date, end_date)
-    logger.info(f"准备加载 {len(date_list)} 天的数据，从 {start_date} 到 {end_date}")
+    logger.info(f"准备加载 {len(date_list)} 天的数据，从 {start_date} 到 {end_date} (timeframe={timeframe})")
 
     if contract is not None:
         logger.info(f"使用固定合约: {contract}")
@@ -178,7 +185,7 @@ def load_and_merge_date_range(
         if SHOW_PROGRESS and (i + 1) % 10 == 0:
             logger.info(f"进度: {i + 1}/{len(date_list)} 天")
 
-        daily_df = load_daily_orderbook_data(date_str, contract)
+        daily_df = load_daily_orderbook_data(date_str, contract, timeframe=timeframe)
         if daily_df is not None:
             daily_df = daily_df.with_columns(pl.lit(date_str).alias("date"))
             all_dfs.append((date_str, daily_df))

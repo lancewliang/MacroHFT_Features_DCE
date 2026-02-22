@@ -7,6 +7,6 @@
 
 
  
-python main.py --start-date 2023-01-01 --end-date 2026-01-01
+python main.py --start-date 2023-01-01 --end-date 2026-01-01 --timeframe 1m
 python test_results.py 
 python src/gen/split_features.py --time-column timestamp -i output/features/features_20230101_20251231.feather -r "20230101-20250201,20250201-20250701,20250701-20260101"
