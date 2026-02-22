@@ -88,13 +88,14 @@ import glob
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 
-def process_order_data(input_dir, output_dir):
+def process_order_data(input_dir, output_dir, interval="30s"):
     """
     处理期货五档行情统计数据（polars版本）
 
     Args:
         input_dir: 输入目录路径 (data/豆粕/年份/五档行情数据/)
         output_dir: 输出目录路径
+        interval: 聚合时间间隔，支持 "30s" 或 "1m"
     """
 
     # 确保输出目录存在
@@ -116,11 +117,12 @@ def process_order_data(input_dir, output_dir):
             # 数据预处理
             df = preprocess_data(df)
 
-            # 按30秒聚合数据
-            result_df = aggregate_by_minute(df)
+            # 按指定间隔聚合数据
+            result_df = aggregate_by_minute(df, interval=interval)
 
-            # 生成输出文件名
-            output_filename = os.path.basename(csv_file).replace('.csv', '_30s.csv')
+            # 生成输出文件名（根据间隔命名，如 _30s.csv 或 _1m.csv）
+            suffix = interval.replace("s", "s").replace("m", "m")
+            output_filename = os.path.basename(csv_file).replace('.csv', f'_{suffix}.csv')
             output_path = os.path.join(output_dir, output_filename)
 
             # 过滤 open/high/low/close 全为 null 的行后保存
@@ -169,25 +171,29 @@ def preprocess_data(df):
 
     return df
 
-def aggregate_by_minute(df):
+def aggregate_by_minute(df, interval="30s"):
     """
-    按30秒聚合数据（polars版本），取窗口内最后一行的价格和委托量
+    按指定间隔聚合数据（polars版本），取窗口内最后一行的价格和委托量
 
     聚合规则：
-    1. 取每个30秒时间窗口内最后一条快照的5档买卖价格和委托量
+    1. 取每个时间窗口内最后一条快照的5档买卖价格和委托量
     2. open_price 取窗口内第一条 LastPrice，close_price 取最后一条
     3. high_price / low_price 取窗口内所有快照的5档价格极值
 
     Args:
         df: 预处理后的DataFrame
+        interval: 聚合时间间隔，支持 "30s" 或 "1m"
 
     Returns:
         聚合后的DataFrame
     """
 
-    # 提取30秒时间戳
+    # 计算连续窗口判断阈值（秒）
+    interval_seconds = {"30s": 30, "1m": 60}.get(interval, 30)
+
+    # 提取时间戳（按指定间隔截断）
     df = df.with_columns(
-        pl.col("datetime").dt.truncate("30s").alias("minute")
+        pl.col("datetime").dt.truncate(interval).alias("minute")
     )
 
     # 按时间窗口和datetime排序，确保时间顺序正确
@@ -238,7 +244,7 @@ def aggregate_by_minute(df):
     ])
 
     result_df = result_df.with_columns([
-        pl.when(pl.col("minute_diff") == 30)
+        pl.when(pl.col("minute_diff") == interval_seconds)
           .then(1)
           .otherwise(0)
           .alias("is_consecutive_minute")
@@ -263,12 +269,12 @@ def process_single_year(args):
     处理单个年份的数据（用于多进程）
 
     Args:
-        args: 包含 (year_dir, output_base_dir) 的元组
+        args: 包含 (year_dir, output_base_dir, interval) 的元组
 
     Returns:
         处理结果的元组 (year_name, success, message)
     """
-    year_dir, output_base_dir = args
+    year_dir, output_base_dir, interval = args
     year_name = os.path.basename(year_dir)
     order_dir = os.path.join(year_dir, "五档行情数据")
 
@@ -280,7 +286,7 @@ def process_single_year(args):
             output_dir = os.path.join(output_base_dir, year_name, "orderbook")
 
             # 处理该年份的数据
-            process_order_data(order_dir, output_dir)
+            process_order_data(order_dir, output_dir, interval=interval)
 
             print(f"[进程 {os.getpid()}] 完成处理年份: {year_name}")
             return (year_name, True, "成功")
@@ -290,7 +296,7 @@ def process_single_year(args):
         return (year_name, False, f"处理失败: {str(e)}")
 
 
-def process_all_years(base_dir, output_base_dir, num_processes=None):
+def process_all_years(base_dir, output_base_dir, num_processes=None, interval="30s"):
     """
     使用多进程并行处理所有年份的数据
 
@@ -298,6 +304,7 @@ def process_all_years(base_dir, output_base_dir, num_processes=None):
         base_dir: 基础数据目录 (data/豆粕/)
         output_base_dir: 输出基础目录
         num_processes: 进程数量，默认为 CPU 核心数
+        interval: 聚合时间间隔，支持 "30s" 或 "1m"
     """
 
     # 查找所有年份目录
@@ -308,14 +315,14 @@ def process_all_years(base_dir, output_base_dir, num_processes=None):
         print("未找到年份目录")
         return
 
-    # 准备参数列表
-    year_args = [(year_dir, output_base_dir) for year_dir in year_dirs]
+    # 准备参数列表（含 interval）
+    year_args = [(year_dir, output_base_dir, interval) for year_dir in year_dirs]
 
     # 确定进程数量
     if num_processes is None:
         num_processes = min(cpu_count(), len(year_dirs))
 
-    print(f"找到 {len(year_dirs)} 个年份目录，将使用 {num_processes} 个进程并行处理")
+    print(f"找到 {len(year_dirs)} 个年份目录，将使用 {num_processes} 个进程并行处理，聚合间隔: {interval}")
 
     # 使用进程池并行处理
     with Pool(processes=num_processes) as pool:
@@ -341,6 +348,9 @@ def main():
     base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
     output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
 
+    # 设置聚合间隔："30s" 或 "1m"
+    interval = "30s"
+
     # 设置进程数量（None 表示使用 CPU 核心数，或手动指定如 4）
     num_processes = None  # 自动使用 CPU 核心数
 
@@ -348,7 +358,7 @@ def main():
     print(f"系统 CPU 核心数: {cpu_count()}")
 
     # 使用多进程处理所有年份的数据
-    process_all_years(base_data_dir, output_base_dir, num_processes=num_processes)
+    process_all_years(base_data_dir, output_base_dir, num_processes=num_processes, interval=interval)
 
     print("\n数据处理完成!")
 
