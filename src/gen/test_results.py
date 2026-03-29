@@ -347,10 +347,16 @@ class FeatureValidator:
             logger.warning("没有 timestamp 列，跳过时间连续性检查")
             return {}
 
-        # 计算时间差（timestamp 列为字符串，需先转为 Datetime）
-        df_sorted = self.df.sort("timestamp").with_columns(
-            pl.col("timestamp").str.to_datetime(strict=False).alias("timestamp_dt")
-        )
+        # 计算时间差（timestamp 列可能已是 Datetime 或字符串）
+        ts_dtype = self.df["timestamp"].dtype
+        if ts_dtype == pl.String or ts_dtype == pl.Utf8:
+            df_sorted = self.df.sort("timestamp").with_columns(
+                pl.col("timestamp").str.to_datetime(strict=False).alias("timestamp_dt")
+            )
+        else:
+            df_sorted = self.df.sort("timestamp").with_columns(
+                pl.col("timestamp").cast(pl.Datetime).alias("timestamp_dt")
+            )
         time_diffs = df_sorted["timestamp_dt"].diff()
 
         # 统计时间间隔
