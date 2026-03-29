@@ -13,9 +13,9 @@
   data/豆粕/2023/十笔最优价位委托/m2305-2023-01-03.csv
 
 使用方法：
-  python scripts/extract_main_contract_data.py --commodity 豆粕
-  python scripts/extract_main_contract_data.py --commodity 豆粕 --year 2023
-  python scripts/extract_main_contract_data.py --commodity 豆粕 --year 2023 --month 01
+  python scripts/step2_extract_main_contract_data.py --commodity 豆粕
+  python scripts/step2_extract_main_contract_data.py --commodity 豆粕 --year 2023
+  python scripts/step2_extract_main_contract_data.py --commodity 豆粕 --year 2023 --month 01
 """
 
 import polars as pl
@@ -42,32 +42,18 @@ TARGET_DATA_ROOT = PROJECT_ROOT / "data"
 
 # 各品种的主力合约月份配置
 MAIN_CONTRACT_MONTHS = {
-    "豆粕": [1, 5, 9],
-    "豆油": [1, 5, 9],
-    "玉米": [1, 5, 9],
-    "豆一": [1, 3, 5, 7, 9, 11],
-    "豆二": [1, 3, 5, 7, 9, 11],
-    "棕榈油": [1, 5, 9],
+    "铝": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 }
 
 # 品种代码映射
 COMMODITY_SYMBOL_MAP = {
-    "豆粕": "m",
-    "豆油": "y",
-    "玉米": "c",
-    "豆一": "a",
-    "豆二": "b",
-    "棕榈油": "p",
+    "铝": "al"
 }
 
-# 数据类型
-DATA_TYPES = ["五档行情数据", "期货成交量统计", "十笔最优价位委托"]
-
-
 # ==================== 辅助函数 ====================
-def get_available_contracts(date_path: Path, data_type: str) -> List[str]:
+def get_available_contracts(date_path: Path,) -> List[str]:
     """获取指定日期和数据类型下可用的合约列表"""
-    data_type_path = date_path / data_type
+    data_type_path = date_path 
 
     if not data_type_path.exists():
         return []
@@ -81,26 +67,13 @@ def get_available_contracts(date_path: Path, data_type: str) -> List[str]:
     return sorted(contracts)
 
 
-def calculate_contract_volume(csv_path: Path, data_type: str) -> float:
+
+def calculate_contract_volume(csv_path: Path) -> float:
     """计算合约的成交量"""
     try:
         df = pl.read_csv(csv_path)
 
-        if data_type == "期货成交量统计":
-            # 期货成交量统计数据：累加所有开仓/平仓量
-            vol_cols = []
-            for i in range(1, 6):
-                for prefix in ["BuyOpenVol", "BuyCloseVol", "SellOpenVol", "SellCloseVol"]:
-                    col_name = f"{prefix}{i}"
-                    if col_name in df.columns:
-                        vol_cols.append(col_name)
-
-            if vol_cols:
-                total_volume = sum(df[col].sum() for col in vol_cols)
-            else:
-                total_volume = 0
-
-        elif "Volume" in df.columns:
+        if "Volume" in df.columns:
             # 五档行情数据：使用Volume字段的变化量
             total_volume = df["Volume"].max() - df["Volume"].min()
         elif "volume" in df.columns:
@@ -142,8 +115,7 @@ def identify_main_contract(
         return None, {}
 
     # 从期货成交量统计数据识别主力合约
-    data_type = "期货成交量统计"
-    contracts = get_available_contracts(date_path, data_type)
+    contracts = get_available_contracts(date_path)
 
     if not contracts:
         logger.warning(f"日期 {date_path.name} 没有找到期货成交量统计数据")
@@ -167,9 +139,9 @@ def identify_main_contract(
     # 计算每个合约的成交量
     contract_volumes = {}
     for contract in main_month_contracts:
-        csv_path = date_path / data_type / f"{contract}.csv"
+        csv_path = date_path / f"{contract}.csv"
         if csv_path.exists():
-            volume = calculate_contract_volume(csv_path, data_type)
+            volume = calculate_contract_volume(csv_path)
             contract_volumes[contract] = volume
 
     if not contract_volumes:
@@ -218,27 +190,26 @@ def copy_main_contract_data(
         return
 
     # 复制每种数据类型的文件
-    for data_type in DATA_TYPES:
-        source_file = source_date_path / data_type / f"{main_contract}.csv"
+    source_file = source_date_path / f"{main_contract}.csv"
 
-        if not source_file.exists():
-            logger.warning(f"文件不存在: {source_file}")
-            continue
+    if not source_file.exists():
+        logger.warning(f"文件不存在: {source_file}")
+        return
 
-        # 目标目录: data/{品种}/{年}/{文件类型}/
-        target_dir = TARGET_DATA_ROOT / commodity / year / data_type
-        target_dir.mkdir(parents=True, exist_ok=True)
+    # 目标目录: data/{品种}/{年}/
+    target_dir = TARGET_DATA_ROOT / commodity / year
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-        # 目标文件名: {合约}-{年}-{月}-{日}.csv
-        target_filename = f"{main_contract}-{year}-{month}-{day}.csv"
-        target_file = target_dir / target_filename
+    # 目标文件名: {合约}-{年}-{月}-{日}.csv
+    target_filename = f"{main_contract}-{year}-{month}-{day}.csv"
+    target_file = target_dir / target_filename
 
-        # 复制文件
-        try:
-            shutil.copy2(source_file, target_file)
-            logger.debug(f"  复制: {source_file.name} -> {target_file}")
-        except Exception as e:
-            logger.error(f"  复制失败: {e}")
+    # 复制文件
+    try:
+        shutil.copy2(source_file, target_file)
+        logger.debug(f"  复制: {source_file.name} -> {target_file}")
+    except Exception as e:
+        logger.error(f"  复制失败: {e}")
 
 
 def process_commodity(
@@ -354,7 +325,8 @@ def main():
     parser.add_argument(
         "--commodity",
         type=str,
-        required=True,
+        default="铝",
+        # required=True,
         choices=list(MAIN_CONTRACT_MONTHS.keys()),
         help="品种名称"
     )

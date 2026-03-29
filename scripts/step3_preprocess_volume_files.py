@@ -254,8 +254,8 @@ def main():
     """主函数"""
     
     # 设置路径
-    base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
-    output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
+    base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
+    output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
     
     print("开始处理期货成交量统计数据...")
     

@@ -166,7 +166,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE_DAYS,
                         help=f'批处理大小（天数） (默认: {BATCH_SIZE_DAYS})')
     parser.add_argument('--timeframe', type=str, default=TIMEFRAME,
-                        choices=['30s', '1m'],
+                        choices=['10s','30s', '1m'],
                         help=f'时间粒度 (默认: {TIMEFRAME})')
     parser.add_argument('--log-level', type=str, default=LOG_LEVEL,
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],

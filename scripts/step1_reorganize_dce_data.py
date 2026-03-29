@@ -9,14 +9,14 @@ import zipfile
 import shutil
 from pathlib import Path
 
+# 品种名称（豆粕的拼音缩写是m）
+variety_name = "铝"
 
 def reorganize_dce_data():
     # 源目录和目标目录
-    source_dir = Path("./data/豆珀2023-2025")
-    target_base_dir = Path("./data/豆珀_重组")
+    source_dir = Path(f"./data/原始下载/{variety_name}2023-2025")
+    target_base_dir = Path(f"./data/原始下载/{variety_name}")
 
-    # 品种名称（豆粕的拼音缩写是m）
-    variety_name = "豆粕"
 
     # 创建目标基础目录
     target_base_dir.mkdir(parents=True, exist_ok=True)

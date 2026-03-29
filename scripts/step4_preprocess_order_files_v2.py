@@ -189,7 +189,7 @@ def aggregate_by_minute(df, interval="30s"):
     """
 
     # 计算连续窗口判断阈值（秒）
-    interval_seconds = {"30s": 30, "1m": 60}.get(interval, 30)
+    interval_seconds = {"10s": 10,"20s": 20, "30s": 30, "1m": 60}.get(interval, 30)
 
     # 提取时间戳（按指定间隔截断）
     df = df.with_columns(
@@ -349,7 +349,7 @@ def main():
     output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
 
     # 设置聚合间隔："30s" 或 "1m"
-    interval = "1m"
+    interval = "10s"
 
     # 设置进程数量（None 表示使用 CPU 核心数，或手动指定如 4）
     num_processes = None  # 自动使用 CPU 核心数
