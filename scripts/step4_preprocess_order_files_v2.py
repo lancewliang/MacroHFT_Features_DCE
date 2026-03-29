@@ -168,10 +168,11 @@ def preprocess_data(df):
 
     # 过滤无效的时间数据并排序
     df = df.filter(pl.col("datetime").is_not_null()).sort("datetime")
-
+    # 打印所有的列名字
+    # print(df.columns)
     return df
 
-def aggregate_by_minute(df, interval="30s"):
+def aggregate_by_minute(df, interval="10s"):
     """
     按指定间隔聚合数据（polars版本），取窗口内最后一行的价格和委托量
 
@@ -276,7 +277,7 @@ def process_single_year(args):
     """
     year_dir, output_base_dir, interval = args
     year_name = os.path.basename(year_dir)
-    order_dir = os.path.join(year_dir, "五档行情数据")
+    order_dir = os.path.join(year_dir)
 
     try:
         if os.path.exists(order_dir):
@@ -345,8 +346,8 @@ def main():
     """主函数"""
 
     # 设置路径
-    base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
-    output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_DCE/data/豆粕"
+    base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
+    output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
 
     # 设置聚合间隔："30s" 或 "1m"
     interval = "10s"

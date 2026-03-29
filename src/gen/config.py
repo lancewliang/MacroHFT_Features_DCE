@@ -16,8 +16,8 @@ OUTPUT_ROOT = PROJECT_ROOT / "output"
 DCE_BASE_PATH = DATA_ROOT
 
 # 品种配置
-COMMODITY = "豆粕"  # 品种名称（中文）
-SYMBOL = "m"  # 品种代码（豆粕）
+COMMODITY = "铝"  # 品种名称（中文）
+SYMBOL = "al"  # 品种代码（铝）
 
 # 数据类型
 DATA_TYPE_LEVEL5 = "五档行情数据"  # 五档行情数据
