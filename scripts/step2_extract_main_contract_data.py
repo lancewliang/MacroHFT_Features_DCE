@@ -244,6 +244,9 @@ def process_commodity(
     skipped_dates = 0
     contract_stats = {}  # 统计每个合约作为主力合约的天数
 
+    # prev_date_dir 用于跨月/跨年传递前一个交易日
+    prev_date_dir = None
+
     # 遍历年份
     year_dirs = sorted(commodity_source_dir.glob("*"))
     if year:
@@ -266,23 +269,29 @@ def process_commodity(
 
             logger.info(f"  处理月份: {month_dir.name}")
 
-            # 遍历日期
-            date_dirs = sorted(month_dir.glob("*"))
+            # 遍历日期，收集所有日期目录
+            date_dirs = sorted([d for d in month_dir.glob("*") if d.is_dir()])
 
-            for date_dir in date_dirs:
-                if not date_dir.is_dir():
-                    continue
-
+            for i, date_dir in enumerate(date_dirs):
                 total_dates += 1
                 date_str = date_dir.name
 
-                # 识别主力合约
+                # 用前一个交易日的成交量来识别今天的主力合约
+                if i == 0 and prev_date_dir is None:
+                    logger.warning(f"    {date_str}: 无前一交易日数据，跳过")
+                    skipped_dates += 1
+                    continue
+
+                # 取前一个交易日目录（优先用上个月最后一天，否则用本月前一天）
+                ref_date_dir = prev_date_dir if i == 0 else date_dirs[i - 1]
+
+                # 用前一交易日的数据识别主力合约
                 main_contract, contract_volumes = identify_main_contract(
-                    date_dir, commodity, volume_threshold
+                    ref_date_dir, commodity, volume_threshold
                 )
 
                 if main_contract is None:
-                    logger.warning(f"    {date_str}: 未识别到主力合约")
+                    logger.warning(f"    {date_str}: 未识别到主力合约（参考日 {ref_date_dir.name}）")
                     skipped_dates += 1
                     continue
 
@@ -296,12 +305,16 @@ def process_commodity(
                     f"{c}: {v:,.0f}" for c, v in
                     sorted(contract_volumes.items(), key=lambda x: x[1], reverse=True)
                 )
-                logger.info(f"    {date_str}: 主力合约 {main_contract} ({volume_info})")
+                logger.info(f"    {date_str}: 主力合约 {main_contract}（参考日 {ref_date_dir.name}，{volume_info}）")
 
                 # 复制主力合约数据
                 copy_main_contract_data(date_dir, commodity, main_contract, date_str)
 
                 processed_dates += 1
+
+            # 记录本月最后一个交易日，供下个月第一天使用
+            if date_dirs:
+                prev_date_dir = date_dirs[-1]
 
     # 输出统计信息
     logger.info(f"\n{'='*60}")
