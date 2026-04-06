@@ -42,7 +42,7 @@ TARGET_DATA_ROOT = PROJECT_ROOT / "data"
 
 # 各品种的主力合约月份配置
 MAIN_CONTRACT_MONTHS = {
-    "铝": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    "铝": [1,  3,  5,  7,  9,  11]
 }
 
 # 品种代码映射

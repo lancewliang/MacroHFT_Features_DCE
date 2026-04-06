@@ -350,7 +350,7 @@ def main():
     output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
 
     # 设置聚合间隔："30s" 或 "1m"
-    interval = "10s"
+    interval = "30s"
 
     # 设置进程数量（None 表示使用 CPU 核心数，或手动指定如 4）
     num_processes = None  # 自动使用 CPU 核心数
