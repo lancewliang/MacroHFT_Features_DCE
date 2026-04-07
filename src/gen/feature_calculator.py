@@ -10,6 +10,8 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
+ROLLING_WINDOWS = [60, 180, 360]
+
 
 # ==================== K线特征因子 ====================
 def calculate_kline_features(df: pl.DataFrame) -> pl.DataFrame:
@@ -251,6 +253,47 @@ def calculate_volume_features(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
+def calculate_depth_balance_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    计算分层不平衡、加权深度不平衡与队列集中度因子
+
+    因子:
+    - imbalance_top1 / imbalance_top3 / imbalance_top5
+    - weighted_imbalance_inv
+    - bid1_queue_concentration / ask1_queue_concentration
+    - top2_depth_share
+
+    Args:
+        df: 包含 bid/ask size 以及 buy_volume/sell_volume 的数据框
+
+    Returns:
+        添加了深度平衡与队列集中度因子的数据框
+    """
+    logger.info("开始计算分层不平衡与队列集中度因子")
+
+    buy_top3 = pl.col("bid1_size") + pl.col("bid2_size") + pl.col("bid3_size")
+    sell_top3 = pl.col("ask1_size") + pl.col("ask2_size") + pl.col("ask3_size")
+    total_top2_depth = pl.col("bid1_size") + pl.col("bid2_size") + pl.col("ask1_size") + pl.col("ask2_size")
+
+    weighted_buy = sum((pl.col(f"bid{i}_size") / float(i) for i in range(1, 6)), pl.lit(0.0))
+    weighted_sell = sum((pl.col(f"ask{i}_size") / float(i) for i in range(1, 6)), pl.lit(0.0))
+
+    df = df.with_columns([
+        ((pl.col("bid1_size") - pl.col("ask1_size")) / (pl.col("bid1_size") + pl.col("ask1_size") + 1e-8))
+        .alias("imbalance_top1"),
+        ((buy_top3 - sell_top3) / (buy_top3 + sell_top3 + 1e-8)).alias("imbalance_top3"),
+        ((pl.col("buy_volume") - pl.col("sell_volume")) / (pl.col("buy_volume") + pl.col("sell_volume") + 1e-8))
+        .alias("imbalance_top5"),
+        ((weighted_buy - weighted_sell) / (weighted_buy + weighted_sell + 1e-8)).alias("weighted_imbalance_inv"),
+        (pl.col("bid1_size") / (pl.col("buy_volume") + 1e-8)).alias("bid1_queue_concentration"),
+        (pl.col("ask1_size") / (pl.col("sell_volume") + 1e-8)).alias("ask1_queue_concentration"),
+        (total_top2_depth / (pl.col("buy_volume") + pl.col("sell_volume") + 1e-8)).alias("top2_depth_share"),
+    ])
+
+    logger.info("分层不平衡与队列集中度因子计算完成")
+    return df
+
+
 def calculate_vwap_features(df: pl.DataFrame) -> pl.DataFrame:
     """
     计算成交量加权平均价格（VWAP）因子
@@ -333,34 +376,289 @@ def calculate_log_return_features(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
+def calculate_stability_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
+    """
+    计算稳定性因子
+
+    因子:
+    - best_spread_duration: 最优价差连续不变的快照数
+    - best_quote_duration: 买一卖一报价对连续不变的快照数
+    - log_return_wap_1_vol_{window}: log_return_wap_1 的多窗口滚动波动率
+
+    Args:
+        df: 包含 price_spread, bid1_price, ask1_price, log_return_wap_1 的数据框
+        windows: 滚动窗口列表，默认 [60, 180, 360]
+
+    Returns:
+        添加了稳定性因子的数据框
+    """
+    logger.info(f"开始计算稳定性因子 (windows={windows})")
+
+    spread_change = (
+        pl.col("price_spread").ne(pl.col("price_spread").shift(1)).fill_null(True)
+    )
+    quote_change = (
+        (
+            pl.col("bid1_price").ne(pl.col("bid1_price").shift(1))
+            | pl.col("ask1_price").ne(pl.col("ask1_price").shift(1))
+        )
+        .fill_null(True)
+    )
+
+    df = df.with_columns([
+        spread_change.cast(pl.Int64).cum_sum().alias("_spread_run_id"),
+        quote_change.cast(pl.Int64).cum_sum().alias("_quote_run_id"),
+    ])
+
+    stability_exprs = [
+        pl.col("_spread_run_id").cum_count().over("_spread_run_id").alias("best_spread_duration"),
+        pl.col("_quote_run_id").cum_count().over("_quote_run_id").alias("best_quote_duration"),
+    ]
+    for window in windows:
+        stability_exprs.append(
+            pl.col("log_return_wap_1").rolling_std(window_size=window).alias(f"log_return_wap_1_vol_{window}")
+        )
+
+    df = df.with_columns(stability_exprs)
+
+    df = df.drop(["_spread_run_id", "_quote_run_id"])
+
+    logger.info("稳定性因子计算完成")
+    logger.warning(f"注意：前 {max(windows)} 行的滚动波动率因子可能为 null（滚动窗口不足）")
+    return df
+
+
+def calculate_order_flow_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
+    """
+    计算订单流失衡因子
+
+    因子:
+    - ofi: 基于相邻快照 bid1/ask1 价格与数量变化构造的一阶 Order Flow Imbalance
+    - ofi_{window}: ofi 的多窗口滚动累积值
+
+    Args:
+        df: 包含 bid1/ask1 价格和数量的数据框
+        windows: 滚动窗口列表，默认 [60, 180, 360]
+
+    Returns:
+        添加了订单流失衡因子的数据框
+    """
+    logger.info(f"开始计算订单流失衡因子 (windows={windows})")
+
+    bid_flow = (
+        pl.when(pl.col("bid1_price") >= pl.col("bid1_price").shift(1))
+        .then(pl.col("bid1_size"))
+        .otherwise(0)
+        - pl.when(pl.col("bid1_price") <= pl.col("bid1_price").shift(1))
+        .then(pl.col("bid1_size").shift(1))
+        .otherwise(0)
+    )
+    ask_flow = (
+        pl.when(pl.col("ask1_price") <= pl.col("ask1_price").shift(1))
+        .then(pl.col("ask1_size"))
+        .otherwise(0)
+        - pl.when(pl.col("ask1_price") >= pl.col("ask1_price").shift(1))
+        .then(pl.col("ask1_size").shift(1))
+        .otherwise(0)
+    )
+
+    df = df.with_columns((bid_flow - ask_flow).alias("ofi"))
+    df = df.with_columns([
+        pl.col("ofi").rolling_sum(window_size=window).alias(f"ofi_{window}")
+        for window in windows
+    ])
+
+    logger.info("订单流失衡因子计算完成")
+    logger.warning(f"注意：前 {max(windows)} 行的滚动 OFI 因子可能为 null（滚动窗口不足）")
+    return df
+
+
+def calculate_volatility_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
+    """
+    计算滚动波动率因子
+
+    因子:
+    - *_vol_{window}: 多窗口滚动波动率
+
+    Args:
+        df: 已包含相关基础列与 ofi 的数据框
+        windows: 滚动窗口列表，默认 [60, 180, 360]
+
+    Returns:
+        添加了滚动波动率因子的数据框
+    """
+    logger.info(f"开始计算滚动波动率因子 (windows={windows})")
+
+    volatility_exprs = []
+    for window in windows:
+        volatility_exprs.extend([
+            pl.col("log_return_wap_2").rolling_std(window_size=window).alias(f"log_return_wap_2_vol_{window}"),
+            pl.col("log_return_bid1_price").rolling_std(window_size=window).alias(f"log_return_bid1_price_vol_{window}"),
+            pl.col("price_spread").rolling_std(window_size=window).alias(f"price_spread_vol_{window}"),
+            pl.col("ofi").rolling_std(window_size=window).alias(f"ofi_vol_{window}"),
+        ])
+
+    df = df.with_columns(volatility_exprs)
+
+    logger.info("滚动波动率因子计算完成")
+    logger.warning(f"注意：前 {max(windows)} 行的滚动波动率因子可能为 null（滚动窗口不足）")
+    return df
+
+
+def calculate_book_shape_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    计算盘口斜率和凸性因子
+
+    因子:
+    - bid_depth_slope / ask_depth_slope: 五档累计深度相对价格距离的线性拟合斜率
+    - bid_book_convexity / ask_book_convexity: 归一化累计深度曲线相对对角线的平均偏离
+
+    Args:
+        df: 包含五档价格和数量的数据框
+
+    Returns:
+        添加了盘口形状因子的数据框
+    """
+    logger.info("开始计算盘口斜率/凸性因子")
+
+    bid_total = (
+        pl.col("bid1_size") + pl.col("bid2_size") + pl.col("bid3_size") + pl.col("bid4_size") + pl.col("bid5_size")
+    )
+    ask_total = (
+        pl.col("ask1_size") + pl.col("ask2_size") + pl.col("ask3_size") + pl.col("ask4_size") + pl.col("ask5_size")
+    )
+
+    bid_dist_5 = (pl.col("bid1_price") - pl.col("bid5_price"))
+    ask_dist_5 = (pl.col("ask5_price") - pl.col("ask1_price"))
+
+    bid_x = [
+        pl.lit(0.0),
+        (pl.col("bid1_price") - pl.col("bid2_price")) / (bid_dist_5 + 1e-8),
+        (pl.col("bid1_price") - pl.col("bid3_price")) / (bid_dist_5 + 1e-8),
+        (pl.col("bid1_price") - pl.col("bid4_price")) / (bid_dist_5 + 1e-8),
+        (pl.col("bid1_price") - pl.col("bid5_price")) / (bid_dist_5 + 1e-8),
+    ]
+    ask_x = [
+        pl.lit(0.0),
+        (pl.col("ask2_price") - pl.col("ask1_price")) / (ask_dist_5 + 1e-8),
+        (pl.col("ask3_price") - pl.col("ask1_price")) / (ask_dist_5 + 1e-8),
+        (pl.col("ask4_price") - pl.col("ask1_price")) / (ask_dist_5 + 1e-8),
+        (pl.col("ask5_price") - pl.col("ask1_price")) / (ask_dist_5 + 1e-8),
+    ]
+
+    bid_y = [
+        pl.col("bid1_size") / (bid_total + 1e-8),
+        (pl.col("bid1_size") + pl.col("bid2_size")) / (bid_total + 1e-8),
+        (pl.col("bid1_size") + pl.col("bid2_size") + pl.col("bid3_size")) / (bid_total + 1e-8),
+        (pl.col("bid1_size") + pl.col("bid2_size") + pl.col("bid3_size") + pl.col("bid4_size")) / (bid_total + 1e-8),
+        pl.lit(1.0),
+    ]
+    ask_y = [
+        pl.col("ask1_size") / (ask_total + 1e-8),
+        (pl.col("ask1_size") + pl.col("ask2_size")) / (ask_total + 1e-8),
+        (pl.col("ask1_size") + pl.col("ask2_size") + pl.col("ask3_size")) / (ask_total + 1e-8),
+        (pl.col("ask1_size") + pl.col("ask2_size") + pl.col("ask3_size") + pl.col("ask4_size")) / (ask_total + 1e-8),
+        pl.lit(1.0),
+    ]
+
+    bid_sum_x = sum(bid_x[1:], bid_x[0])
+    ask_sum_x = sum(ask_x[1:], ask_x[0])
+    bid_sum_y = sum(bid_y[1:], bid_y[0])
+    ask_sum_y = sum(ask_y[1:], ask_y[0])
+    bid_sum_xy = sum((x * y for x, y in zip(bid_x, bid_y)), pl.lit(0.0))
+    ask_sum_xy = sum((x * y for x, y in zip(ask_x, ask_y)), pl.lit(0.0))
+    bid_sum_x2 = sum((x * x for x in bid_x), pl.lit(0.0))
+    ask_sum_x2 = sum((x * x for x in ask_x), pl.lit(0.0))
+    bid_convexity_raw = sum((y - x for x, y in zip(bid_x, bid_y)), pl.lit(0.0)) / 5.0
+    ask_convexity_raw = sum((y - x for x, y in zip(ask_x, ask_y)), pl.lit(0.0)) / 5.0
+
+    bid_slope_denominator = 5 * bid_sum_x2 - bid_sum_x * bid_sum_x
+    ask_slope_denominator = 5 * ask_sum_x2 - ask_sum_x * ask_sum_x
+    bid_shape_valid = (bid_dist_5 > 0) & (bid_total > 0)
+    ask_shape_valid = (ask_dist_5 > 0) & (ask_total > 0)
+
+    df = df.with_columns([
+        pl.when(bid_shape_valid & (bid_slope_denominator.abs() > 1e-8))
+        .then((5 * bid_sum_xy - bid_sum_x * bid_sum_y) / bid_slope_denominator)
+        .otherwise(0.0)
+        .alias("bid_depth_slope"),
+        pl.when(ask_shape_valid & (ask_slope_denominator.abs() > 1e-8))
+        .then((5 * ask_sum_xy - ask_sum_x * ask_sum_y) / ask_slope_denominator)
+        .otherwise(0.0)
+        .alias("ask_depth_slope"),
+        pl.when(bid_shape_valid)
+        .then(bid_convexity_raw)
+        .otherwise(0.0)
+        .alias("bid_book_convexity"),
+        pl.when(ask_shape_valid)
+        .then(ask_convexity_raw)
+        .otherwise(0.0)
+        .alias("ask_book_convexity"),
+    ])
+
+    logger.info("盘口斜率/凸性因子计算完成")
+    return df
+
+
+def calculate_dynamic_microstructure_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
+    """
+    计算动态盘口微观结构因子
+
+    因子:
+    - imbalance_top3_change: 三档不平衡的一阶变化
+    - weighted_imbalance_inv_change: 近端加权不平衡的一阶变化
+    - ofi_zscore_{window}: ofi 的多窗口滚动标准化
+    - bid_depth_slope_change / ask_depth_slope_change: 盘口斜率的一阶变化
+
+    Args:
+        df: 已包含不平衡、OFI、盘口形状因子的数据框
+        windows: 滚动窗口列表，默认 [60, 180, 360]
+
+    Returns:
+        添加了动态盘口微观结构因子的数据框
+    """
+    logger.info(f"开始计算动态盘口微观结构因子 (windows={windows})")
+
+    dynamic_exprs = [
+        (pl.col("imbalance_top3") - pl.col("imbalance_top3").shift(1)).alias("imbalance_top3_change"),
+        (pl.col("weighted_imbalance_inv") - pl.col("weighted_imbalance_inv").shift(1)).alias("weighted_imbalance_inv_change"),
+        (pl.col("bid_depth_slope") - pl.col("bid_depth_slope").shift(1)).alias("bid_depth_slope_change"),
+        (pl.col("ask_depth_slope") - pl.col("ask_depth_slope").shift(1)).alias("ask_depth_slope_change"),
+    ]
+    for window in windows:
+        ofi_rolling_mean = pl.col("ofi").rolling_mean(window_size=window)
+        ofi_rolling_std = pl.col("ofi").rolling_std(window_size=window)
+        dynamic_exprs.append(
+            ((pl.col("ofi") - ofi_rolling_mean) / (ofi_rolling_std + 1e-8)).alias(f"ofi_zscore_{window}")
+        )
+
+    df = df.with_columns(dynamic_exprs)
+
+    logger.info("动态盘口微观结构因子计算完成")
+    logger.warning(f"注意：前 1 行的 change 因子与前 {max(windows)} 行的 ofi_zscore 因子可能为 null")
+    return df
+
+
 # ==================== 趋势因子 ====================
-def calculate_trend_features(df: pl.DataFrame, window: int = 60) -> pl.DataFrame:
+def calculate_trend_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
     """
     计算趋势因子 (标准化趋势)
 
     公式: y_trend = (y - RollingMean(y, window)) / RollingStd(y, window)
 
     因子列表:
-    - ask1_price_trend_60
-    - bid1_price_trend_60
-    - buy_spread_trend_60
-    - sell_spread_trend_60
-    - wap_1_trend_60
-    - wap_2_trend_60
-    - buy_vwap_trend_60
-    - sell_vwap_trend_60
-    - volume_trend_60
+    - *_trend_{window}
 
     注意：前 window 行数据会有 null 值（滚动窗口不足）
 
     Args:
         df: 包含基础因子的数据框
-        window: 滚动窗口大小，默认60
+        windows: 滚动窗口列表，默认 [60, 180, 360]
 
     Returns:
         添加了趋势因子的数据框
     """
-    logger.info(f"开始计算趋势因子 (window={window})")
+    logger.info(f"开始计算趋势因子 (windows={windows})")
 
     # 需要计算趋势的列
     base_columns = [
@@ -376,22 +674,18 @@ def calculate_trend_features(df: pl.DataFrame, window: int = 60) -> pl.DataFrame
     ]
 
     trend_exprs = []
-    for col in base_columns:
-        # 计算滚动均值和标准差
-        rolling_mean = pl.col(col).rolling_mean(window_size=window)
-        rolling_std = pl.col(col).rolling_std(window_size=window)
-        # t_rolling_mean = rolling_mean.alias(f"{col}_trend_rolling_mean_{window}")
-        # t_rolling_std = rolling_std.alias(f"{col}_trend_rolling_std_{window}")
-        # 计算趋势因子: (y - rolling_mean) / rolling_std
-        trend = ((pl.col(col) - rolling_mean) / (rolling_std + 1e-8)).alias(f"{col}_trend_{window}")
-        # trend_exprs.append(t_rolling_mean)
-        # trend_exprs.append(t_rolling_std)
-        trend_exprs.append(trend)
+    for window in windows:
+        for col in base_columns:
+            rolling_mean = pl.col(col).rolling_mean(window_size=window)
+            rolling_std = pl.col(col).rolling_std(window_size=window)
+            trend_exprs.append(
+                ((pl.col(col) - rolling_mean) / (rolling_std + 1e-8)).alias(f"{col}_trend_{window}")
+            )
 
     df = df.with_columns(trend_exprs)
 
     logger.info("趋势因子计算完成")
-    logger.warning(f"注意：前 {window} 行的趋势因子可能为 null（滚动窗口不足）")
+    logger.warning(f"注意：前 {max(windows)} 行的趋势因子可能为 null（滚动窗口不足）")
 
     return df
 
@@ -407,9 +701,15 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     3. WAP因子
     4. 价差因子
     5. 成交量因子
-    6. VWAP因子
-    7. 对数收益率因子
-    8. 趋势因子
+    6. 分层不平衡与队列集中度因子
+    7. VWAP因子
+    8. 对数收益率因子
+    9. 稳定性因子
+    10. 订单流失衡因子
+    11. 滚动波动率因子
+    12. 盘口斜率/凸性因子
+    13. 动态盘口微观结构因子
+    14. 趋势因子
 
     Args:
         df: 合并后的原始数据（包含K线和订单簿数据）
@@ -439,13 +739,31 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     # 5. 成交量因子
     df = calculate_volume_features(df)
 
-    # 6. VWAP 因子
+    # 6. 分层不平衡与队列集中度因子
+    df = calculate_depth_balance_features(df)
+
+    # 7. VWAP 因子
     df = calculate_vwap_features(df)
 
-    # 7. 对数收益率因子
+    # 8. 对数收益率因子
     df = calculate_log_return_features(df)
 
-    # 8. 趋势因子
+    # 9. 稳定性因子
+    df = calculate_stability_features(df)
+
+    # 10. 订单流失衡因子
+    df = calculate_order_flow_features(df)
+
+    # 11. 滚动波动率因子
+    df = calculate_volatility_features(df)
+
+    # 12. 盘口斜率/凸性因子
+    df = calculate_book_shape_features(df)
+
+    # 13. 动态盘口微观结构因子
+    df = calculate_dynamic_microstructure_features(df)
+
+    # 14. 趋势因子
     df = calculate_trend_features(df)
 
     final_rows = len(df)
@@ -486,6 +804,12 @@ def get_feature_columns() -> List[str]:
         # 成交量因子
         "buy_volume", "sell_volume", "volume_imbalance",
 
+        # 分层不平衡与队列集中度因子
+        "imbalance_top1", "imbalance_top3", "imbalance_top5",
+        "weighted_imbalance_inv",
+        "bid1_queue_concentration", "ask1_queue_concentration",
+        "top2_depth_share",
+
         # VWAP因子
         "buy_vwap", "sell_vwap",
 
@@ -494,12 +818,37 @@ def get_feature_columns() -> List[str]:
         "log_return_ask1_price", "log_return_ask2_price",
         "log_return_wap_1", "log_return_wap_2",
 
+        # 稳定性因子
+        "best_spread_duration", "best_quote_duration",
+        *[f"log_return_wap_1_vol_{window}" for window in ROLLING_WINDOWS],
+
+        # 订单流失衡因子
+        "ofi", *[f"ofi_{window}" for window in ROLLING_WINDOWS],
+
+        # 波动率因子
+        *[f"log_return_wap_2_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"log_return_bid1_price_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"price_spread_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"ofi_vol_{window}" for window in ROLLING_WINDOWS],
+
+        # 盘口斜率/凸性因子
+        "bid_depth_slope", "ask_depth_slope",
+        "bid_book_convexity", "ask_book_convexity",
+
+        # 动态盘口微观结构因子
+        "imbalance_top3_change", "weighted_imbalance_inv_change",
+        *[f"ofi_zscore_{window}" for window in ROLLING_WINDOWS],
+        "bid_depth_slope_change", "ask_depth_slope_change",
+
         # 趋势因子
-        "ask1_price_trend_60", "bid1_price_trend_60",
-        "buy_spread_trend_60", "sell_spread_trend_60",
-        "wap_1_trend_60", "wap_2_trend_60",
-        "buy_vwap_trend_60", "sell_vwap_trend_60",
-        "volume_trend_60"
+        *[
+            f"{col}_trend_{window}"
+            for window in ROLLING_WINDOWS
+            for col in [
+                "ask1_price", "bid1_price", "buy_spread", "sell_spread",
+                "wap_1", "wap_2", "buy_vwap", "sell_vwap", "volume"
+            ]
+        ]
     ]
 
 

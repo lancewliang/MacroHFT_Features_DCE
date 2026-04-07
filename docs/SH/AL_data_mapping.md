@@ -251,12 +251,112 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - `log_return_*` 基于价格序列，不基于 `*_size_n`
 - 第一行通常为空，因为不存在 `t-1`
 
-### 4.8 趋势因子
+### 4.8 稳定性因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `best_spread_duration` | `if price_spread[t] == price_spread[t-1] then prev + 1 else 1` | 最优价差连续未变化的快照数 |
+| `best_quote_duration` | `if bid1_price[t] == bid1_price[t-1] and ask1_price[t] == ask1_price[t-1] then prev + 1 else 1` | 买一卖一报价对连续未变化的快照数 |
+| `log_return_wap_1_vol_{60,180,360}` | `RollingStd(log_return_wap_1, w)` | 第一档 WAP 对数收益率多窗口滚动波动率 |
+
+说明：
+
+- 当前实现中的持续时长按连续快照数统计
+- 当前实现同时生成 `60 / 180 / 360` 三档窗口
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
+
+### 4.9 订单流失衡因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `ofi` | `1(bid1_price[t] >= bid1_price[t-1]) * bid1_size[t] - 1(bid1_price[t] <= bid1_price[t-1]) * bid1_size[t-1] - 1(ask1_price[t] <= ask1_price[t-1]) * ask1_size[t] + 1(ask1_price[t] >= ask1_price[t-1]) * ask1_size[t-1]` | 相邻快照的一阶 OFI |
+| `ofi_{60,180,360}` | `RollingSum(ofi, w)` | 多窗口累计 OFI |
+
+说明：
+
+- 当前实现基于相邻快照的一档 `bid1/ask1` 价格和数量变化构造 OFI
+- 当前实现同时生成 `ofi_60`、`ofi_180`、`ofi_360`
+
+### 4.10 盘口斜率与凸性因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `bid_depth_slope` | `beta in y_bid_i = alpha + beta * x_bid_i + epsilon_i` | 买侧累计深度相对归一化价格距离的线性拟合斜率 |
+| `ask_depth_slope` | `beta in y_ask_i = alpha + beta * x_ask_i + epsilon_i` | 卖侧累计深度相对归一化价格距离的线性拟合斜率 |
+| `bid_book_convexity` | `mean(y_bid_i - x_bid_i), i=1..5` | 买侧累计深度曲线相对对角线的平均偏离 |
+| `ask_book_convexity` | `mean(y_ask_i - x_ask_i), i=1..5` | 卖侧累计深度曲线相对对角线的平均偏离 |
+
+其中：
+
+```text
+Q_bid_i = Σ(bidk_size), k = 1..i
+Q_ask_i = Σ(askk_size), k = 1..i
+
+x_bid_i = (bid1_price - bidi_price) / (bid1_price - bid5_price)
+x_ask_i = (aski_price - ask1_price) / (ask5_price - ask1_price)
+
+y_bid_i = Q_bid_i / Q_bid_5
+y_ask_i = Q_ask_i / Q_ask_5
+```
+
+说明：
+
+- 正凸性通常表示近端更厚，负凸性通常表示远端更厚
+- 当五档价格距离为 0 或该侧总挂单量为 0 时，相关形状因子返回 `0`
+
+### 4.11 分层不平衡与队列集中度因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `imbalance_top1` | `(bid1_size - ask1_size) / (bid1_size + ask1_size)` | 一档买卖量不平衡 |
+| `imbalance_top3` | `((bid1_size + bid2_size + bid3_size) - (ask1_size + ask2_size + ask3_size)) / ((bid1_size + bid2_size + bid3_size) + (ask1_size + ask2_size + ask3_size))` | 三档买卖量不平衡 |
+| `imbalance_top5` | `(buy_volume - sell_volume) / (buy_volume + sell_volume)` | 五档买卖量不平衡 |
+| `weighted_imbalance_inv` | `(Σ((1 / i) * bid_i_size) - Σ((1 / i) * ask_i_size)) / (Σ((1 / i) * bid_i_size) + Σ((1 / i) * ask_i_size))` | 使用 `w_i = 1 / i` 的近端加权深度不平衡 |
+| `bid1_queue_concentration` | `bid1_size / buy_volume` | 买一队列集中度 |
+| `ask1_queue_concentration` | `ask1_size / sell_volume` | 卖一队列集中度 |
+| `top2_depth_share` | `(bid1_size + bid2_size + ask1_size + ask2_size) / (buy_volume + sell_volume)` | 前两档深度占前五档总深度的比例 |
+
+说明：
+
+- `imbalance_top5` 与当前 `volume_imbalance` 使用相同五档总量口径
+- `weighted_imbalance_inv` 当前使用倒数权重，强调近端深度
+
+### 4.12 动态盘口微观结构因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `imbalance_top3_change` | `imbalance_top3[t] - imbalance_top3[t-1]` | 三档不平衡的一阶变化 |
+| `weighted_imbalance_inv_change` | `weighted_imbalance_inv[t] - weighted_imbalance_inv[t-1]` | 近端加权不平衡的一阶变化 |
+| `ofi_zscore_{60,180,360}` | `(ofi - RollingMean(ofi, w)) / RollingStd(ofi, w)` | OFI 的多窗口滚动标准化 |
+| `bid_depth_slope_change` | `bid_depth_slope[t] - bid_depth_slope[t-1]` | 买侧盘口斜率的一阶变化 |
+| `ask_depth_slope_change` | `ask_depth_slope[t] - ask_depth_slope[t-1]` | 卖侧盘口斜率的一阶变化 |
+
+说明：
+
+- `*_change` 第一行通常为空，因为不存在 `t-1`
+- 当前实现同时生成 `ofi_zscore_60`、`ofi_zscore_180`、`ofi_zscore_360`
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
+
+### 4.13 波动率因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `log_return_wap_2_vol_{60,180,360}` | `RollingStd(log_return_wap_2, w)` | 第二档 WAP 对数收益率滚动波动率 |
+| `log_return_bid1_price_vol_{60,180,360}` | `RollingStd(log_return_bid1_price, w)` | 买一价对数收益率滚动波动率 |
+| `price_spread_vol_{60,180,360}` | `RollingStd(price_spread, w)` | 归一化买卖价差滚动波动率 |
+| `ofi_vol_{60,180,360}` | `RollingStd(ofi, w)` | OFI 滚动波动率 |
+
+说明：
+
+- 当前统一使用 `60 / 180 / 360` 窗口滚动标准差定义波动率
+- `ofi_vol_*` 描述的是订单流波动率
+
+### 4.14 趋势因子
 
 统一公式：
 
 ```text
-y_trend = (y - RollingMean(y, 60)) / RollingStd(y, 60)
+y_trend_w = (y - RollingMean(y, w)) / RollingStd(y, w)
 ```
 
 当前实现中的基础变量集合：
@@ -273,20 +373,14 @@ y_trend = (y - RollingMean(y, 60)) / RollingStd(y, 60)
 
 对应输出字段：
 
-- `ask1_price_trend_60`
-- `bid1_price_trend_60`
-- `buy_spread_trend_60`
-- `sell_spread_trend_60`
-- `wap_1_trend_60`
-- `wap_2_trend_60`
-- `buy_vwap_trend_60`
-- `sell_vwap_trend_60`
-- `volume_trend_60`
+- 对每个 `w ∈ {60, 180, 360}`，生成
+  `ask1_price_trend_w`、`bid1_price_trend_w`、`buy_spread_trend_w`、`sell_spread_trend_w`、
+  `wap_1_trend_w`、`wap_2_trend_w`、`buy_vwap_trend_w`、`sell_vwap_trend_w`、`volume_trend_w`
 
 说明：
 
-- 当前实现分母实际为 `RollingStd(y, 60) + 1e-8`
-- 前 60 行可能为空，因为滚动窗口不足
+- 当前实现分母实际为 `RollingStd(y, w) + 1e-8`
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
 
 ---
 
@@ -307,9 +401,15 @@ y_trend = (y - RollingMean(y, 60)) / RollingStd(y, 60)
 | 量能衍生 | 3 |
 | VWAP 衍生 | 2 |
 | 对数收益率衍生 | 6 |
-| 趋势衍生 | 9 |
+| 稳定性衍生 | 14 |
+| 订单流衍生 | 7 |
+| 盘口形状衍生 | 4 |
+| 深度平衡衍生 | 7 |
+| 动态盘口衍生 | 7 |
+| 波动率衍生 | 12 |
+| 趋势衍生 | 27 |
 
-如果只看最终“特征输出”部分，衍生因子共 46 个。
+如果只看最终“特征输出”部分，衍生因子共 103 个。
 
 如果把基础字段一并统计，则常用分析字段为：
 
@@ -318,10 +418,10 @@ timestamp
 + open_price, high_price, low_price, close_price
 + bid1_price ~ bid5_price, bid1_size ~ bid5_size
 + ask1_price ~ ask5_price, ask1_size ~ ask5_size
-+ 46 个衍生因子
++ 103 个衍生因子
 ```
 
-合计 71 个字段。
+合计 128 个字段。
 
 ---
 
@@ -363,8 +463,14 @@ timestamp
 - `calculate_wap_features()`
 - `calculate_spread_features()`
 - `calculate_volume_features()`
+- `calculate_depth_balance_features()`
 - `calculate_vwap_features()`
 - `calculate_log_return_features()`
+- `calculate_stability_features()`
+- `calculate_order_flow_features()`
+- `calculate_volatility_features()`
+- `calculate_book_shape_features()`
+- `calculate_dynamic_microstructure_features()`
 - `calculate_trend_features()`
 - `calculate_all_features()`
 
@@ -403,7 +509,7 @@ timestamp
 1. 时间戳使用 `ActionDay + UpdateTime`
 2. OHLC 来自窗口聚合，不直接取原始 `OpenPrice/HighPrice/LowPrice/ClosePrice`
 3. 因子计算基于预处理后的 orderbook 文件
-4. `log_return_*` 基于价格，`trend_*` 基于 60 窗口滚动标准化
+4. `log_return_*` 基于价格，`trend_*` 基于 `60 / 180 / 360` 窗口滚动标准化
 
 以上口径已经与当前实现保持一致。
 

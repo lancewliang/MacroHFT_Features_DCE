@@ -114,7 +114,154 @@ log_return_wap_2 = log(wap_2[t] / wap_2[t-1])
 
 - 这里的 `log_return_*` 基于价格序列，不基于 `*_size_n`。
 
-## 8. 趋势特征
+## 8. 稳定性特征
+
+```text
+best_spread_duration =
+  if price_spread[t] == price_spread[t-1]
+  then best_spread_duration[t-1] + 1
+  else 1
+
+best_quote_duration =
+  if bid1_price[t] == bid1_price[t-1] and ask1_price[t] == ask1_price[t-1]
+  then best_quote_duration[t-1] + 1
+  else 1
+
+for w in {60, 180, 360}:
+  log_return_wap_1_vol_w = RollingStd(log_return_wap_1, w)
+```
+
+说明：
+
+- `best_*_duration` 当前按连续快照数统计。
+- 当前实现同时生成 `60 / 180 / 360` 三档窗口。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
+
+## 9. 订单流失衡特征
+
+```text
+e_b = 1(bid1_price[t] >= bid1_price[t-1]) * bid1_size[t]
+    - 1(bid1_price[t] <= bid1_price[t-1]) * bid1_size[t-1]
+
+e_a = 1(ask1_price[t] <= ask1_price[t-1]) * ask1_size[t]
+    - 1(ask1_price[t] >= ask1_price[t-1]) * ask1_size[t-1]
+
+ofi = e_b - e_a
+for w in {60, 180, 360}:
+  ofi_w = RollingSum(ofi, w)
+```
+
+## 10. 盘口斜率与凸性特征
+
+先定义五档累计深度：
+
+```text
+Q_bid_i = Σ(bidk_size), k = 1..i
+Q_ask_i = Σ(askk_size), k = 1..i
+```
+
+以及相对最优价的归一化距离：
+
+```text
+x_bid_i = (bid1_price - bidi_price) / (bid1_price - bid5_price)
+x_ask_i = (aski_price - ask1_price) / (ask5_price - ask1_price)
+
+y_bid_i = Q_bid_i / Q_bid_5
+y_ask_i = Q_ask_i / Q_ask_5
+```
+
+对 `x_i` 与 `y_i` 做线性拟合：
+
+```text
+y_i = alpha + beta * x_i + epsilon_i
+```
+
+对应输出列：
+
+- `bid_depth_slope`
+- `ask_depth_slope`
+
+凸性定义为归一化累计深度曲线相对对角线 `y = x` 的平均偏离：
+
+```text
+bid_book_convexity = mean(y_bid_i - x_bid_i), i = 1..5
+ask_book_convexity = mean(y_ask_i - x_ask_i), i = 1..5
+```
+
+说明：
+
+- 正值通常表示近端更厚，负值通常表示远端更厚。
+
+## 11. 分层不平衡与队列集中度特征
+
+```text
+B_1 = bid1_size
+A_1 = ask1_size
+
+B_3 = bid1_size + bid2_size + bid3_size
+A_3 = ask1_size + ask2_size + ask3_size
+
+B_5 = buy_volume
+A_5 = sell_volume
+
+imbalance_top1 = (B_1 - A_1) / (B_1 + A_1)
+imbalance_top3 = (B_3 - A_3) / (B_3 + A_3)
+imbalance_top5 = (B_5 - A_5) / (B_5 + A_5)
+
+weighted_imbalance_inv =
+  (Σ((1 / i) * bidi_size) - Σ((1 / i) * aski_size))
+  / (Σ((1 / i) * bidi_size) + Σ((1 / i) * aski_size))
+
+bid1_queue_concentration = bid1_size / buy_volume
+ask1_queue_concentration = ask1_size / sell_volume
+
+top2_depth_share =
+  (bid1_size + bid2_size + ask1_size + ask2_size)
+  / (buy_volume + sell_volume)
+```
+
+说明：
+
+- `imbalance_top5` 与五档总量口径下的 `volume_imbalance` 本质一致。
+- `weighted_imbalance_inv` 对近端档位赋予更高权重，当前使用 `w_i = 1 / i`。
+
+## 12. 动态盘口微观结构特征
+
+```text
+imbalance_top3_change = imbalance_top3[t] - imbalance_top3[t-1]
+
+weighted_imbalance_inv_change =
+  weighted_imbalance_inv[t] - weighted_imbalance_inv[t-1]
+
+for w in {60, 180, 360}:
+  ofi_zscore_w =
+    (ofi - RollingMean(ofi, w)) / RollingStd(ofi, w)
+
+bid_depth_slope_change = bid_depth_slope[t] - bid_depth_slope[t-1]
+ask_depth_slope_change = ask_depth_slope[t] - ask_depth_slope[t-1]
+```
+
+说明：
+
+- `*_change` 为一阶差分，反映盘口状态变化速度。
+- 当前实现同时生成 `ofi_zscore_60`、`ofi_zscore_180`、`ofi_zscore_360`。
+
+## 13. 波动率特征
+
+```text
+for w in {60, 180, 360}:
+  log_return_wap_2_vol_w = RollingStd(log_return_wap_2, w)
+  log_return_bid1_price_vol_w = RollingStd(log_return_bid1_price, w)
+  price_spread_vol_w = RollingStd(price_spread, w)
+  ofi_vol_w = RollingStd(ofi, w)
+```
+
+说明：
+
+- 当前统一使用 `60 / 180 / 360` 窗口滚动标准差定义波动率。
+- `ofi_vol_*` 描述的是订单流波动率，不是价格波动率。
+
+## 14. 趋势特征
 
 ```text
 Y = [
@@ -129,22 +276,17 @@ Y = [
   volume
 ]
 
-y_trend = (y - RollingMean(y, 60)) / RollingStd(y, 60)
+for w in {60, 180, 360}:
+  y_trend_w = (y - RollingMean(y, w)) / RollingStd(y, w)
 ```
 
 对应输出列：
 
-- `ask1_price_trend_60`
-- `bid1_price_trend_60`
-- `buy_spread_trend_60`
-- `sell_spread_trend_60`
-- `wap_1_trend_60`
-- `wap_2_trend_60`
-- `buy_vwap_trend_60`
-- `sell_vwap_trend_60`
-- `volume_trend_60`
+- 对每个 `w ∈ {60, 180, 360}`，生成
+  `ask1_price_trend_w`、`bid1_price_trend_w`、`buy_spread_trend_w`、`sell_spread_trend_w`、
+  `wap_1_trend_w`、`wap_2_trend_w`、`buy_vwap_trend_w`、`sell_vwap_trend_w`、`volume_trend_w`
 
-## 9. 最终输出因子列表
+## 15. 最终输出因子列表
 
 ```text
 kmid, kmid2, klen, kup, kup2, klow, klow2, ksft, ksft2,
@@ -154,13 +296,29 @@ ask1_size_n, ask2_size_n, ask3_size_n, ask4_size_n, ask5_size_n,
 wap_1, wap_2, wap_balance,
 buy_spread, sell_spread, price_spread,
 buy_volume, sell_volume, volume_imbalance,
+imbalance_top1, imbalance_top3, imbalance_top5,
+weighted_imbalance_inv,
+bid1_queue_concentration, ask1_queue_concentration,
+top2_depth_share,
 buy_vwap, sell_vwap,
 log_return_bid1_price, log_return_bid2_price,
 log_return_ask1_price, log_return_ask2_price,
 log_return_wap_1, log_return_wap_2,
-ask1_price_trend_60, bid1_price_trend_60,
-buy_spread_trend_60, sell_spread_trend_60,
-wap_1_trend_60, wap_2_trend_60,
-buy_vwap_trend_60, sell_vwap_trend_60,
-volume_trend_60
+best_spread_duration, best_quote_duration,
+log_return_wap_1_vol_{60,180,360},
+ofi, ofi_{60,180,360},
+bid_depth_slope, ask_depth_slope,
+bid_book_convexity, ask_book_convexity,
+imbalance_top3_change, weighted_imbalance_inv_change,
+ofi_zscore_{60,180,360},
+bid_depth_slope_change, ask_depth_slope_change,
+log_return_wap_2_vol_{60,180,360},
+log_return_bid1_price_vol_{60,180,360},
+price_spread_vol_{60,180,360},
+ofi_vol_{60,180,360},
+ask1_price_trend_{60,180,360}, bid1_price_trend_{60,180,360},
+buy_spread_trend_{60,180,360}, sell_spread_trend_{60,180,360},
+wap_1_trend_{60,180,360}, wap_2_trend_{60,180,360},
+buy_vwap_trend_{60,180,360}, sell_vwap_trend_{60,180,360},
+volume_trend_{60,180,360}
 ```

@@ -6,6 +6,8 @@
 from pathlib import Path
 from datetime import datetime
 
+ROLLING_WINDOWS = [60, 180, 360]
+
 # ==================== 项目路径配置 ====================
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_ROOT = PROJECT_ROOT / "data"
@@ -89,6 +91,29 @@ LEVEL_NAMES = {
     -1: "bid1", -2: "bid2", -3: "bid3", -4: "bid4", -5: "bid5",
     1: "ask1", 2: "ask2", 3: "ask3", 4: "ask4", 5: "ask5"
 }
+
+# orderbook 聚合 CSV 基础列
+ORDERBOOK_BASE_COLUMNS = [
+    "datetime",
+    "minute",
+    "is_consecutive_minute",
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "total_trade_volume",
+    "turnover",
+    "open_interest",
+]
+
+ORDERBOOK_LEVEL_COLUMNS = [
+    *[f"bid{i}_price" for i in range(1, 6)],
+    *[f"bid{i}_size" for i in range(1, 6)],
+    *[f"ask{i}_price" for i in range(1, 6)],
+    *[f"ask{i}_size" for i in range(1, 6)],
+]
+
+ORDERBOOK_REQUIRED_COLUMNS = ORDERBOOK_BASE_COLUMNS + ORDERBOOK_LEVEL_COLUMNS
 
 # ==================== DCE五档行情数据列配置 ====================
 # DCE五档行情原始列名
@@ -203,6 +228,14 @@ SPREAD_FEATURES = ["buy_spread", "sell_spread", "price_spread"]
 # 成交量因子
 VOLUME_FEATURES = ["buy_volume", "sell_volume", "volume_imbalance"]
 
+# 分层不平衡与队列集中度因子
+DEPTH_BALANCE_FEATURES = [
+    "imbalance_top1", "imbalance_top3", "imbalance_top5",
+    "weighted_imbalance_inv",
+    "bid1_queue_concentration", "ask1_queue_concentration",
+    "top2_depth_share",
+]
+
 # VWAP 因子
 VWAP_FEATURES = ["buy_vwap", "sell_vwap"]
 
@@ -213,13 +246,47 @@ LOG_RETURN_FEATURES = [
     "log_return_wap_1", "log_return_wap_2"
 ]
 
+# 稳定性因子
+STABILITY_FEATURES = [
+    "best_spread_duration", "best_quote_duration",
+    *[f"log_return_wap_1_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"log_return_wap_2_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"log_return_bid1_price_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"price_spread_vol_{window}" for window in ROLLING_WINDOWS],
+]
+
+# 订单流失衡因子
+ORDER_FLOW_FEATURES = [
+    "ofi",
+    *[f"ofi_{window}" for window in ROLLING_WINDOWS],
+    *[f"ofi_vol_{window}" for window in ROLLING_WINDOWS],
+]
+
+# 盘口形状因子
+BOOK_SHAPE_FEATURES = [
+    "bid_depth_slope", "ask_depth_slope",
+    "bid_book_convexity", "ask_book_convexity"
+]
+
+# 动态盘口微观结构因子
+DYNAMIC_MICROSTRUCTURE_FEATURES = [
+    "imbalance_top3_change", "weighted_imbalance_inv_change",
+    *[f"ofi_zscore_{window}" for window in ROLLING_WINDOWS],
+    "bid_depth_slope_change", "ask_depth_slope_change",
+]
+
 # 趋势因子
+TREND_BASE_COLUMNS = [
+    "ask1_price", "bid1_price",
+    "buy_spread", "sell_spread",
+    "wap_1", "wap_2",
+    "buy_vwap", "sell_vwap",
+    "volume",
+]
 TREND_FEATURES = [
-    "ask1_price_trend_60", "bid1_price_trend_60",
-    "buy_spread_trend_60", "sell_spread_trend_60",
-    "wap_1_trend_60", "wap_2_trend_60",
-    "buy_vwap_trend_60", "sell_vwap_trend_60",
-    "volume_trend_60"
+    f"{col}_trend_{window}"
+    for window in ROLLING_WINDOWS
+    for col in TREND_BASE_COLUMNS
 ]
 
 # 所有因子列表
@@ -229,8 +296,13 @@ ALL_FEATURES = (
     WAP_FEATURES +
     SPREAD_FEATURES +
     VOLUME_FEATURES +
+    DEPTH_BALANCE_FEATURES +
     VWAP_FEATURES +
     LOG_RETURN_FEATURES +
+    STABILITY_FEATURES +
+    ORDER_FLOW_FEATURES +
+    BOOK_SHAPE_FEATURES +
+    DYNAMIC_MICROSTRUCTURE_FEATURES +
     TREND_FEATURES
 )
 

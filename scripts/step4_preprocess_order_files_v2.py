@@ -79,6 +79,7 @@ data/豆粕/2023/五档行情数据
 时间档位 datetime,minute,
 是否连续 is_consecutive_minute,
 委托价格：open_price,high_price,low_price,close_price,
+成交统计：total_trade_volume,turnover,open_interest,
 5档委托：bid1_price,bid1_size,bid2_price,bid2_size,bid3_price,bid3_size,bid4_price,bid4_size,bid5_price,bid5_size,ask1_price,ask1_size,ask2_price,ask2_size,ask3_price,ask3_size,ask4_price,ask4_size,ask5_price,ask5_size
 """
 
@@ -207,6 +208,13 @@ def aggregate_by_minute(df, interval="10s"):
         pl.col("LastPrice").last().alias("close_price"),
     ]
 
+    if "Volume" in df.columns:
+        agg_exprs.append(pl.col("Volume").last().alias("total_trade_volume"))
+    if "Turnover" in df.columns:
+        agg_exprs.append(pl.col("Turnover").last().alias("turnover"))
+    if "OpenInterest" in df.columns:
+        agg_exprs.append(pl.col("OpenInterest").last().alias("open_interest"))
+
     for i in range(1, 6):
         if f"BidPrice{i}" in df.columns:
             agg_exprs.append(pl.col(f"BidPrice{i}").last().alias(f"bid{i}_price"))
@@ -252,7 +260,18 @@ def aggregate_by_minute(df, interval="10s"):
     ])
 
     # 定义需要的字段列表
-    required_columns = ["datetime", "minute", "is_consecutive_minute", "open_price", "high_price", "low_price", "close_price"]
+    required_columns = [
+        "datetime",
+        "minute",
+        "is_consecutive_minute",
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "total_trade_volume",
+        "turnover",
+        "open_interest",
+    ]
 
     for i in range(1, 6):
         required_columns.extend([f"bid{i}_price", f"bid{i}_size"])

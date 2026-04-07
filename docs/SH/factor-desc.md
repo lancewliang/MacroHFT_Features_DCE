@@ -255,7 +255,222 @@
 
 ---
 
-## 九、趋势因子（Trend Features）
+## 九、稳定性因子（Stability Features）
+
+### 1. 最优价差持续时长
+
+- **best_spread_duration**: best spread 持续时长
+  - 计算：若 `price_spread[t] == price_spread[t-1]`，则 `best_spread_duration[t] = best_spread_duration[t-1] + 1`，否则为 `1`
+  - 含义：买一卖一价差连续未变化的快照数
+  - 用途：衡量最优价差的稳定性与盘口黏性
+
+### 2. 最优报价持续时长
+
+- **best_quote_duration**: best quote 未变化持续时长
+  - 计算：若 `bid1_price[t] == bid1_price[t-1]` 且 `ask1_price[t] == ask1_price[t-1]`，则 `best_quote_duration[t] = best_quote_duration[t-1] + 1`，否则为 `1`
+  - 含义：买一卖一价格对连续未变化的快照数
+  - 用途：衡量最优报价的稳定性
+
+### 3. WAP 对数收益率滚动波动率
+
+- **log_return_wap_1_vol_60 / 180 / 360**: 第一档 WAP 对数收益率多窗口滚动波动率
+  - 计算：`RollingStd(log_return_wap_1, w)`，`w ∈ {60, 180, 360}`
+  - 含义：不同时间尺度下第一档 WAP 对数收益率的标准差
+  - 用途：衡量短期到中期的微观价格扰动强弱
+
+说明：
+
+- 当前实现中的持续时长按连续快照数统计，而不是物理秒数。
+- 当前实现同时生成 `60 / 180 / 360` 三档窗口。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
+
+---
+
+## 十、订单流失衡因子（Order Flow Imbalance Features）
+
+- **ofi**: 一阶订单流失衡
+  - 计算：`1(bid1_price[t] >= bid1_price[t-1]) * bid1_size[t] - 1(bid1_price[t] <= bid1_price[t-1]) * bid1_size[t-1] - 1(ask1_price[t] <= ask1_price[t-1]) * ask1_size[t] + 1(ask1_price[t] >= ask1_price[t-1]) * ask1_size[t-1]`
+  - 含义：相邻快照下，最优买卖价位变化所对应的净订单流压力
+  - 用途：刻画短时买卖力量偏向，是典型高频微观结构信号
+
+- **ofi_60 / 180 / 360**: 多窗口累计订单流失衡
+  - 计算：`RollingSum(ofi, w)`，`w ∈ {60, 180, 360}`
+  - 含义：不同时间尺度下的累计净订单流压力
+  - 用途：衡量短期内订单流的持续方向性
+
+说明：
+
+- 当前实现基于相邻快照的一档 `bid1/ask1` 价格与数量变化构造 OFI。
+- 当前实现同时生成 `ofi_60`、`ofi_180`、`ofi_360`。
+
+---
+
+## 十一、盘口斜率与凸性因子（Book Shape Features）
+
+先定义买卖两侧五档累计深度：
+
+- `Q_bid_i = Σ(bid_k_size)`，`k = 1..i`
+- `Q_ask_i = Σ(ask_k_size)`，`k = 1..i`
+
+再定义相对最优价的归一化距离：
+
+- `x_bid_i = (bid1_price - bid_i_price) / (bid1_price - bid5_price)`
+- `x_ask_i = (ask_i_price - ask1_price) / (ask5_price - ask1_price)`
+- `y_bid_i = Q_bid_i / Q_bid_5`
+- `y_ask_i = Q_ask_i / Q_ask_5`
+
+### 1. 盘口斜率
+
+- **bid_depth_slope**: 买侧盘口斜率
+  - 计算：对 `y_bid_i = α + β * x_bid_i + ε_i` 做线性拟合，其中 `β` 为 `bid_depth_slope`
+  - 含义：买侧累计深度随档位距离扩张的速度
+  - 用途：判断买盘深度是更集中在近端还是逐步堆积到远端
+
+- **ask_depth_slope**: 卖侧盘口斜率
+  - 计算：对 `y_ask_i = α + β * x_ask_i + ε_i` 做线性拟合，其中 `β` 为 `ask_depth_slope`
+  - 含义：卖侧累计深度随档位距离扩张的速度
+  - 用途：判断卖盘深度分布形态
+
+### 2. 盘口凸性
+
+- **bid_book_convexity**: 买侧盘口凸性
+  - 计算：`mean(y_bid_i - x_bid_i)`，`i = 1..5`
+  - 含义：买侧累计深度曲线相对对角线 `y = x` 的平均偏离
+  - 用途：正值通常表示近端更厚，负值通常表示远端更厚
+
+- **ask_book_convexity**: 卖侧盘口凸性
+  - 计算：`mean(y_ask_i - x_ask_i)`，`i = 1..5`
+  - 含义：卖侧累计深度曲线相对对角线 `y = x` 的平均偏离
+  - 用途：正值通常表示近端更厚，负值通常表示远端更厚
+
+说明：
+
+- 当前实现使用五档累计深度与归一化档位距离进行拟合。
+- 当五档价格距离为 0 或该侧总挂单量为 0 时，相关形状因子返回 `0`。
+
+---
+
+## 十二、分层不平衡与队列集中度因子（Depth Balance Features）
+
+定义：
+
+- `B_k = Σ(bid_i_size)`，`i = 1..k`
+- `A_k = Σ(ask_i_size)`，`i = 1..k`
+
+### 1. 分层不平衡
+
+- **imbalance_top1**: 一档不平衡
+  - 计算：`(B_1 - A_1) / (B_1 + A_1)`
+  - 含义：最优一档买卖挂单量的相对失衡程度
+  - 用途：反映最靠近撮合位置的挂单力量偏向
+
+- **imbalance_top3**: 三档不平衡
+  - 计算：`(B_3 - A_3) / (B_3 + A_3)`
+  - 含义：前三档买卖深度的相对失衡程度
+  - 用途：反映近端盘口整体压力
+
+- **imbalance_top5**: 五档不平衡
+  - 计算：`(B_5 - A_5) / (B_5 + A_5)`
+  - 含义：前五档买卖深度的相对失衡程度
+  - 用途：反映全五档盘口力量偏向
+
+### 2. 加权深度不平衡
+
+- **weighted_imbalance_inv**: 近端加权深度不平衡
+  - 计算：`(Σ((1 / i) * bid_i_size) - Σ((1 / i) * ask_i_size)) / (Σ((1 / i) * bid_i_size) + Σ((1 / i) * ask_i_size))`，`i = 1..5`
+  - 含义：对近端档位赋予更高权重后的买卖深度相对失衡程度
+  - 用途：更突出最优档附近流动性的偏向
+
+### 3. 队列集中度
+
+- **bid1_queue_concentration**: 买一队列集中度
+  - 计算：`bid1_size / buy_volume`
+  - 含义：买方总深度中有多少集中在买一
+  - 用途：判断买盘流动性是否高度堆积在近端
+
+- **ask1_queue_concentration**: 卖一队列集中度
+  - 计算：`ask1_size / sell_volume`
+  - 含义：卖方总深度中有多少集中在卖一
+  - 用途：判断卖盘流动性是否高度堆积在近端
+
+- **top2_depth_share**: 前两档深度占比
+  - 计算：`(bid1_size + bid2_size + ask1_size + ask2_size) / (buy_volume + sell_volume)`
+  - 含义：全盘口前两档深度占前五档总深度的比例
+  - 用途：衡量流动性是更集中在近端还是更分散到深端
+
+说明：
+
+- 当前实现中的 `imbalance_top5` 与 `volume_imbalance` 使用相同五档总量口径，因此通常会高度相似。
+- 若后续需要更强近端权重，可以再扩展指数衰减版本。
+
+---
+
+## 十三、动态盘口微观结构因子（Dynamic Microstructure Features）
+
+- **imbalance_top3_change**: 三档不平衡变化率
+  - 计算：`imbalance_top3[t] - imbalance_top3[t-1]`
+  - 含义：近端三档买卖失衡在相邻快照间的变化幅度
+  - 用途：反映近端盘口力量是否正在快速切换
+
+- **weighted_imbalance_inv_change**: 加权深度不平衡变化率
+  - 计算：`weighted_imbalance_inv[t] - weighted_imbalance_inv[t-1]`
+  - 含义：近端加权深度失衡在相邻快照间的变化幅度
+  - 用途：刻画近端深度偏向的动态变化
+
+- **ofi_zscore_60 / 180 / 360**: OFI 的多窗口滚动标准化
+  - 计算：`(ofi - RollingMean(ofi, w)) / RollingStd(ofi, w)`，`w ∈ {60, 180, 360}`
+  - 含义：当前 OFI 相对不同时间尺度近期分布的偏离程度
+  - 用途：识别异常强的短时订单流冲击
+
+- **bid_depth_slope_change**: 买侧盘口斜率变化率
+  - 计算：`bid_depth_slope[t] - bid_depth_slope[t-1]`
+  - 含义：买侧深度曲线形状的相邻快照变化
+  - 用途：衡量买盘从近端堆积到远端堆积的切换速度
+
+- **ask_depth_slope_change**: 卖侧盘口斜率变化率
+  - 计算：`ask_depth_slope[t] - ask_depth_slope[t-1]`
+  - 含义：卖侧深度曲线形状的相邻快照变化
+  - 用途：衡量卖盘形态变化速度
+
+说明：
+
+- `*_change` 第一行通常为空，因为不存在 `t-1`。
+- 当前实现同时生成 `ofi_zscore_60`、`ofi_zscore_180`、`ofi_zscore_360`。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
+
+---
+
+## 十四、波动率因子（Volatility Features）
+
+- **log_return_wap_2_vol_60 / 180 / 360**: 第二档 WAP 对数收益率滚动波动率
+  - 计算：`RollingStd(log_return_wap_2, w)`，`w ∈ {60, 180, 360}`
+  - 含义：第二档 WAP 对数收益率在不同时间尺度下的标准差
+  - 用途：衡量次优档位均衡价格的短期波动强度
+
+- **log_return_bid1_price_vol_60 / 180 / 360**: 买一价对数收益率滚动波动率
+  - 计算：`RollingStd(log_return_bid1_price, w)`，`w ∈ {60, 180, 360}`
+  - 含义：买一价对数收益率在不同时间尺度下的标准差
+  - 用途：衡量最优买价的短期扰动强度
+
+- **price_spread_vol_60 / 180 / 360**: 买卖价差滚动波动率
+  - 计算：`RollingStd(price_spread, w)`，`w ∈ {60, 180, 360}`
+  - 含义：归一化买卖价差在不同时间尺度下的标准差
+  - 用途：衡量流动性状态的波动程度
+
+- **ofi_vol_60 / 180 / 360**: 订单流失衡滚动波动率
+  - 计算：`RollingStd(ofi, w)`，`w ∈ {60, 180, 360}`
+  - 含义：订单流失衡在不同时间尺度下的标准差
+  - 用途：衡量订单流冲击强弱的波动程度
+
+说明：
+
+- 当前统一使用 `60 / 180 / 360` 窗口滚动标准差定义波动率。
+- `ofi_vol_*` 属于订单流波动率，不是价格波动率。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
+
+---
+
+## 十五、趋势因子（Trend Features）
 
 趋势因子基于以下变量集合：
 
@@ -271,45 +486,41 @@
 
 统一公式：
 
-- `y_trend = (y - RollingMean(y, 60)) / RollingStd(y, 60)`
+- `y_trend_w = (y - RollingMean(y, w)) / RollingStd(y, w)`，`w ∈ {60, 180, 360}`
 
 对应输出列：
 
-- **ask1_price_trend_60**: 卖一价趋势因子
-- **bid1_price_trend_60**: 买一价趋势因子
-- **buy_spread_trend_60**: 买盘价差趋势因子
-- **sell_spread_trend_60**: 卖盘价差趋势因子
-- **wap_1_trend_60**: 第一档 WAP 趋势因子
-- **wap_2_trend_60**: 第二档 WAP 趋势因子
-- **buy_vwap_trend_60**: 买方 VWAP 趋势因子
-- **sell_vwap_trend_60**: 卖方 VWAP 趋势因子
-- **volume_trend_60**: 总挂单量趋势因子
+- 对每个 `w ∈ {60, 180, 360}`，生成：
+  `ask1_price_trend_w`、`bid1_price_trend_w`、`buy_spread_trend_w`、`sell_spread_trend_w`、
+  `wap_1_trend_w`、`wap_2_trend_w`、`buy_vwap_trend_w`、`sell_vwap_trend_w`、`volume_trend_w`
 
 说明：
 
-- 当前实现分母使用 `RollingStd(y, 60) + 1e-8`，用于避免除零。
-- 前 60 行可能为空，因为滚动窗口不足。
+- 当前实现分母使用 `RollingStd(y, w) + 1e-8`，用于避免除零。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
 
 ---
 
-## 十、因子应用说明
+## 十六、因子应用说明
 
 ### 1. 因子类型分类
 
 - **价格类因子**：订单簿价格、K线价格、WAP、VWAP
 - **数量类因子**：订单量、归一化订单量、买卖总量
-- **比率类因子**：价差、成交量不平衡度、K线归一化比率
-- **动态类因子**：对数收益率、趋势因子
+- **比率类因子**：价差、成交量不平衡度、分层不平衡、队列集中度、K线归一化比率
+- **动态类因子**：对数收益率、稳定性因子、波动率因子、OFI、动态盘口因子、趋势因子
 
 ### 2. 常见应用场景
 
 - **流动性分析**：`price_spread`、`volume`、`buy_spread`、`sell_spread`
-- **市场微观结构分析**：订单簿价格数量、`wap_1`、`wap_2`、`buy_vwap`、`sell_vwap`
-- **价格预测**：`volume_imbalance`、`log_return_*`、`*_trend_60`、K线特征
-- **风险管理**：`klen`、`price_spread`、`volume_imbalance`
+- **盘口深度平衡分析**：`imbalance_top1`、`imbalance_top3`、`weighted_imbalance_inv`
+- **市场微观结构分析**：订单簿价格数量、`wap_1`、`wap_2`、`buy_vwap`、`sell_vwap`、`ofi`
+- **价格预测**：`volume_imbalance`、`log_return_*`、`*_vol_{60,180,360}`、`ofi_zscore_{60,180,360}`、`*_trend_{60,180,360}`、K线特征
+- **流动性形状分析**：`best_spread_duration`、`best_quote_duration`、`bid_depth_slope`、`ask_depth_slope`、`*_book_convexity`、`top2_depth_share`
+- **风险管理**：`klen`、`price_spread`、`volume_imbalance`、`log_return_wap_1_vol_{60,180,360}`
 
 ### 3. 注意事项
 
-- 对数收益率和趋势因子都依赖历史序列。
-- 趋势因子是 60 窗口滚动标准化结果。
+- 对数收益率、稳定性、OFI 和趋势因子都依赖历史序列。
+- 趋势因子是 `60 / 180 / 360` 窗口滚动标准化结果。
 - `max_oc` 和 `min_oc` 是中间变量，不属于最终输出列。

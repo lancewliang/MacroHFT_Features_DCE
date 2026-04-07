@@ -109,6 +109,7 @@ class FeatureValidator:
         required_columns = [
             "timestamp",
             "open_price", "high_price", "low_price", "close_price",
+            "total_trade_volume", "turnover", "open_interest",
             "bid1_price", "bid1_size", "ask1_price", "ask1_size",
         ]
 
@@ -208,7 +209,15 @@ class FeatureValidator:
             # 趋势因子前N行有空值是正常的（滚动窗口）
             trend_cols = [col for col in columns_with_nulls if 'trend' in col['列名']]
             if trend_cols:
-                logger.info("注意: 趋势因子前60行空值是正常的（滚动窗口大小为60）")
+                logger.info("注意: 趋势因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+
+            stability_vol_cols = [col for col in columns_with_nulls if 'log_return_wap_1_vol_' in col['列名']]
+            if stability_vol_cols:
+                logger.info("注意: 滚动波动率因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+
+            ofi_roll_cols = [col for col in columns_with_nulls if col['列名'].startswith('ofi_')]
+            if ofi_roll_cols:
+                logger.info("注意: OFI 滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
 
         self.validation_results['null_values'] = result
         return result
@@ -311,7 +320,12 @@ class FeatureValidator:
         # 关键因子的统计
         key_features = [
             'volume_imbalance', 'price_spread', 'wap_1',
-            'kmid', 'klen', 'buy_vwap', 'sell_vwap'
+            'kmid', 'klen', 'buy_vwap', 'sell_vwap',
+            'best_spread_duration', 'ofi', 'bid_book_convexity',
+            'imbalance_top1', 'weighted_imbalance_inv', 'top2_depth_share',
+            'imbalance_top3_change', 'ofi_zscore_60', 'ofi_zscore_180',
+            'log_return_wap_2_vol_60', 'log_return_wap_2_vol_180',
+            'price_spread_vol_60', 'ofi_vol_60', 'ofi_vol_180'
         ]
 
         logger.info("\n关键因子统计:")

@@ -16,6 +16,7 @@ try:
         DCE_BASE_PATH,
         COMMODITY,
         TIMEFRAME,
+        ORDERBOOK_REQUIRED_COLUMNS,
     )
 except ImportError:
     # 回退到绝对导入（当直接运行时）
@@ -24,6 +25,7 @@ except ImportError:
         DCE_BASE_PATH,
         COMMODITY,
         TIMEFRAME,
+        ORDERBOOK_REQUIRED_COLUMNS,
     )
 
 # 配置日志
@@ -116,7 +118,22 @@ def load_daily_orderbook_data(date_str: str, contract: str = None, timeframe: st
         return None
 
     try:
-        df = pl.read_csv(filepath)
+        schema_df = pl.read_csv(filepath, n_rows=0)
+        available_columns = [
+            col for col in ORDERBOOK_REQUIRED_COLUMNS
+            if col in schema_df.columns
+        ]
+        missing_columns = [
+            col for col in ORDERBOOK_REQUIRED_COLUMNS
+            if col not in schema_df.columns
+        ]
+        if not available_columns:
+            logger.error(f"{filepath} 不包含任何可识别的 orderbook 列")
+            return None
+        if missing_columns:
+            logger.warning(f"{filepath.name} 缺少部分基础列: {missing_columns}")
+
+        df = pl.read_csv(filepath, columns=available_columns)
         df = df.with_columns(pl.lit(contract).alias("contract"))
 
         if "datetime" in df.columns:
@@ -320,8 +337,11 @@ if __name__ == "__main__":
         print(f"形状: {df.shape}")
         print(f"列名: {df.columns}")
 
-        key_cols = ["timestamp", "open_price", "high_price", "low_price", "close_price",
-                   "bid1_price", "bid1_size", "ask1_price", "ask1_size"]
+        key_cols = [
+            "timestamp", "open_price", "high_price", "low_price", "close_price",
+            "total_trade_volume", "turnover", "open_interest",
+            "bid1_price", "bid1_size", "ask1_price", "ask1_size",
+        ]
         missing_cols = [col for col in key_cols if col not in df.columns]
         if missing_cols:
             print(f"\n警告: 缺少关键列: {missing_cols}")
@@ -330,7 +350,16 @@ if __name__ == "__main__":
             print(f"\nOHLCV数据示例:")
             print(df.select(["timestamp", "open_price", "high_price", "low_price", "close_price"]).head(10))
             print(f"\n五档数据示例:")
-            print(df.select(["timestamp", "bid1_price", "bid1_size", "ask1_price", "ask1_size"]).head(10))
+            print(df.select([
+                "timestamp",
+                "total_trade_volume",
+                "turnover",
+                "open_interest",
+                "bid1_price",
+                "bid1_size",
+                "ask1_price",
+                "ask1_size",
+            ]).head(10))
 
         print(f"\n{'='*60}")
         print("数据质量验证")
