@@ -67,6 +67,14 @@ DEFAULT_FEATURE_COLUMNS = [
     "bid1_queue_concentration",
     "ask1_queue_concentration",
     "top2_depth_share",
+    "trade_volume_delta",
+    "turnover_delta",
+    "avg_trade_price",
+    "avg_trade_price_bias",
+    "avg_trade_price_bias_change",
+    "open_interest_change",
+    "open_interest_change_ratio",
+    "open_interest_change_per_trade",
     "sell_vwap",
     "buy_vwap",
     "log_return_bid1_price",
@@ -93,6 +101,21 @@ DEFAULT_FEATURE_COLUMNS = [
     *[f"ofi_zscore_{window}" for window in ROLLING_WINDOWS],
     "bid_depth_slope_change",
     "ask_depth_slope_change",
+    *[f"trade_volume_delta_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"turnover_delta_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_bias_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"open_interest_change_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"trade_volume_delta_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"turnover_delta_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_bias_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"open_interest_change_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"signed_trade_pressure_{window}" for window in ROLLING_WINDOWS],
+    *[f"signed_open_interest_pressure_{window}" for window in ROLLING_WINDOWS],
+    *[f"trade_ofi_resonance_{window}" for window in ROLLING_WINDOWS],
+    *[f"trade_volume_delta_slope_{window}" for window in ROLLING_WINDOWS],
+    *[f"turnover_delta_slope_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_bias_slope_{window}" for window in ROLLING_WINDOWS],
+    *[f"open_interest_slope_{window}" for window in ROLLING_WINDOWS],
     *[
         f"{col}_trend_{window}"
         for window in ROLLING_WINDOWS
@@ -110,6 +133,7 @@ VP_VAE_CATEGORY_QUOTAS = {
     "stability": 1,
     "order_flow": 1,
     "shape": 1,
+    "trade_activity": 1,
 }
 
 
@@ -145,6 +169,16 @@ def feature_category(feature: str) -> str:
         return "kline_core"
     if feature in {"ksft", "kup", "klow", "kmid"}:
         return "kline_aux"
+    if (
+        feature.startswith("trade_volume_delta")
+        or feature.startswith("turnover_delta")
+        or feature.startswith("avg_trade_price")
+        or feature.startswith("open_interest")
+        or feature.startswith("signed_trade_pressure")
+        or feature.startswith("signed_open_interest_pressure")
+        or feature.startswith("trade_ofi_resonance")
+    ):
+        return "trade_activity"
     if feature in {"imbalance_top3_change", "weighted_imbalance_inv_change"}:
         return "distribution"
     if (
@@ -191,13 +225,32 @@ def feature_preference_score(feature: str) -> int:
         score += 1
     if feature.endswith("_change"):
         score += 1
+    if (
+        feature.startswith("trade_volume_delta")
+        or feature.startswith("turnover_delta")
+        or feature.startswith("avg_trade_price")
+        or feature.startswith("open_interest")
+        or feature.startswith("signed_trade_pressure")
+        or feature.startswith("signed_open_interest_pressure")
+        or feature.startswith("trade_ofi_resonance")
+    ):
+        score += 1
     if feature in {"imbalance_top1", "imbalance_top3", "weighted_imbalance_inv", "top2_depth_share"}:
         score += 1
     if (
         any(matches_suffix(feature, prefix) for prefix in ["ofi", "ofi_zscore", "ofi_vol"])
         or any(
+            feature == f"{prefix}_{window}"
+            for prefix in ["signed_trade_pressure", "signed_open_interest_pressure", "trade_ofi_resonance"]
+            for window in ROLLING_WINDOWS
+        )
+        or any(
             matches_suffix(feature, prefix)
             for prefix in [
+                "trade_volume_delta_zscore",
+                "turnover_delta_zscore",
+                "avg_trade_price_bias_zscore",
+                "open_interest_change_zscore",
                 "log_return_wap_1_vol",
                 "log_return_wap_2_vol",
                 "log_return_bid1_price_vol",

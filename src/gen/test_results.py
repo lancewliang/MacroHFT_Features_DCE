@@ -219,6 +219,18 @@ class FeatureValidator:
             if ofi_roll_cols:
                 logger.info("注意: OFI 滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
 
+            trade_roll_cols = [
+                col for col in columns_with_nulls
+                if (
+                    col['列名'].startswith('trade_volume_delta_')
+                    or col['列名'].startswith('turnover_delta_')
+                    or col['列名'].startswith('avg_trade_price_bias_')
+                    or col['列名'].startswith('open_interest_')
+                )
+            ]
+            if trade_roll_cols:
+                logger.info("注意: 基于成交/持仓快照的滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+
         self.validation_results['null_values'] = result
         return result
 
@@ -325,7 +337,15 @@ class FeatureValidator:
             'imbalance_top1', 'weighted_imbalance_inv', 'top2_depth_share',
             'imbalance_top3_change', 'ofi_zscore_60', 'ofi_zscore_180',
             'log_return_wap_2_vol_60', 'log_return_wap_2_vol_180',
-            'price_spread_vol_60', 'ofi_vol_60', 'ofi_vol_180'
+            'price_spread_vol_60', 'ofi_vol_60', 'ofi_vol_180',
+            'trade_volume_delta', 'avg_trade_price_bias', 'open_interest_change',
+            'avg_trade_price_bias_change', 'open_interest_change_per_trade',
+            'trade_volume_delta_zscore_60', 'turnover_delta_zscore_60',
+            'avg_trade_price_bias_zscore_60', 'open_interest_change_zscore_60',
+            'signed_trade_pressure_60', 'signed_open_interest_pressure_60',
+            'trade_ofi_resonance_60',
+            'trade_volume_delta_vol_60', 'turnover_delta_vol_60',
+            'avg_trade_price_bias_slope_60', 'open_interest_slope_60'
         ]
 
         logger.info("\n关键因子统计:")

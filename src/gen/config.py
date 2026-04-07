@@ -236,6 +236,15 @@ DEPTH_BALANCE_FEATURES = [
     "top2_depth_share",
 ]
 
+# 成交与持仓快照衍生因子
+TRADE_SNAPSHOT_FEATURES = [
+    "trade_volume_delta", "turnover_delta",
+    "avg_trade_price", "avg_trade_price_bias",
+    "avg_trade_price_bias_change",
+    "open_interest_change", "open_interest_change_ratio",
+    "open_interest_change_per_trade",
+]
+
 # VWAP 因子
 VWAP_FEATURES = ["buy_vwap", "sell_vwap"]
 
@@ -275,6 +284,25 @@ DYNAMIC_MICROSTRUCTURE_FEATURES = [
     "bid_depth_slope_change", "ask_depth_slope_change",
 ]
 
+# 成交与持仓滚动因子
+TRADE_ROLLING_FEATURES = [
+    *[f"trade_volume_delta_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"turnover_delta_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_bias_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"open_interest_change_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"trade_volume_delta_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"turnover_delta_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_bias_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"open_interest_change_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"signed_trade_pressure_{window}" for window in ROLLING_WINDOWS],
+    *[f"signed_open_interest_pressure_{window}" for window in ROLLING_WINDOWS],
+    *[f"trade_ofi_resonance_{window}" for window in ROLLING_WINDOWS],
+    *[f"trade_volume_delta_slope_{window}" for window in ROLLING_WINDOWS],
+    *[f"turnover_delta_slope_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_bias_slope_{window}" for window in ROLLING_WINDOWS],
+    *[f"open_interest_slope_{window}" for window in ROLLING_WINDOWS],
+]
+
 # 趋势因子
 TREND_BASE_COLUMNS = [
     "ask1_price", "bid1_price",
@@ -297,12 +325,14 @@ ALL_FEATURES = (
     SPREAD_FEATURES +
     VOLUME_FEATURES +
     DEPTH_BALANCE_FEATURES +
+    TRADE_SNAPSHOT_FEATURES +
     VWAP_FEATURES +
     LOG_RETURN_FEATURES +
     STABILITY_FEATURES +
     ORDER_FLOW_FEATURES +
     BOOK_SHAPE_FEATURES +
     DYNAMIC_MICROSTRUCTURE_FEATURES +
+    TRADE_ROLLING_FEATURES +
     TREND_FEATURES
 )
 

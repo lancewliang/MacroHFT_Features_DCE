@@ -13,6 +13,24 @@ logger = logging.getLogger(__name__)
 ROLLING_WINDOWS = [60, 180, 360]
 
 
+def _group_keys(df: pl.DataFrame) -> list[str]:
+    """返回适合做快照差分的分组键。"""
+    return [key for key in ("date", "contract") if key in df.columns]
+
+
+def _shift_within_groups(expr: pl.Expr, periods: int, group_keys: list[str]) -> pl.Expr:
+    """在日内分组内做 shift，避免累计快照跨日串联。"""
+    if group_keys:
+        return expr.shift(periods).over(group_keys)
+    return expr.shift(periods)
+
+
+def _endpoint_slope_expr(column: str, window: int, group_keys: list[str]) -> pl.Expr:
+    """用窗口首尾差近似每步斜率。"""
+    prev_value = _shift_within_groups(pl.col(column), window, group_keys)
+    return ((pl.col(column) - prev_value) / float(window)).alias(f"{column}_slope_{window}")
+
+
 # ==================== K线特征因子 ====================
 def calculate_kline_features(df: pl.DataFrame) -> pl.DataFrame:
     """
@@ -175,6 +193,78 @@ def calculate_wap_features(df: pl.DataFrame) -> pl.DataFrame:
     )
 
     logger.info("WAP因子计算完成")
+    return df
+
+
+def calculate_trade_snapshot_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    计算基于成交量/成交额/持仓量快照的衍生因子。
+
+    说明：
+    - total_trade_volume / turnover / open_interest 都是快照字段
+    - 成交类因子先做相邻快照差分，再参与后续计算
+
+    因子:
+    - trade_volume_delta
+    - turnover_delta
+    - avg_trade_price
+    - avg_trade_price_bias
+    - avg_trade_price_bias_change
+    - open_interest_change
+    - open_interest_change_ratio
+    - open_interest_change_per_trade
+    """
+    logger.info("开始计算成交与持仓快照衍生因子")
+
+    group_keys = _group_keys(df)
+    prev_trade_volume = _shift_within_groups(pl.col("total_trade_volume"), 1, group_keys)
+    prev_turnover = _shift_within_groups(pl.col("turnover"), 1, group_keys)
+    prev_open_interest = _shift_within_groups(pl.col("open_interest"), 1, group_keys)
+
+    trade_volume_delta_raw = pl.col("total_trade_volume") - prev_trade_volume
+    turnover_delta_raw = pl.col("turnover") - prev_turnover
+    open_interest_change = (
+        pl.when(prev_open_interest.is_not_null())
+        .then(pl.col("open_interest") - prev_open_interest)
+        .otherwise(0.0)
+    )
+
+    df = df.with_columns([
+        pl.when(prev_trade_volume.is_not_null() & (trade_volume_delta_raw >= 0))
+        .then(trade_volume_delta_raw)
+        .otherwise(0.0)
+        .alias("trade_volume_delta"),
+        pl.when(prev_turnover.is_not_null() & (turnover_delta_raw >= 0))
+        .then(turnover_delta_raw)
+        .otherwise(0.0)
+        .alias("turnover_delta"),
+        open_interest_change.alias("open_interest_change"),
+    ])
+
+    df = df.with_columns([
+        pl.when(pl.col("trade_volume_delta") > 0)
+        .then(pl.col("turnover_delta") / (pl.col("trade_volume_delta") + 1e-8))
+        .otherwise(pl.col("close_price"))
+        .alias("avg_trade_price"),
+        (pl.col("open_interest_change") / (prev_open_interest.abs() + 1e-8))
+        .fill_null(0.0)
+        .alias("open_interest_change_ratio"),
+        (pl.col("open_interest_change") / (pl.col("trade_volume_delta") + 1e-8))
+        .fill_null(0.0)
+        .alias("open_interest_change_per_trade"),
+    ])
+
+    df = df.with_columns(
+        ((pl.col("avg_trade_price") - pl.col("wap_1")) / (pl.col("wap_1") + 1e-8)).alias("avg_trade_price_bias")
+    )
+
+    df = df.with_columns(
+        (pl.col("avg_trade_price_bias") - _shift_within_groups(pl.col("avg_trade_price_bias"), 1, group_keys))
+        .fill_null(0.0)
+        .alias("avg_trade_price_bias_change")
+    )
+
+    logger.info("成交与持仓快照衍生因子计算完成")
     return df
 
 
@@ -639,6 +729,84 @@ def calculate_dynamic_microstructure_features(df: pl.DataFrame, windows: list[in
     return df
 
 
+def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
+    """
+    计算基于成交/持仓快照衍生量的滚动波动率与窗口斜率因子。
+
+    因子:
+    - trade_volume_delta_vol_{w}
+    - turnover_delta_vol_{w}
+    - avg_trade_price_bias_vol_{w}
+    - open_interest_change_vol_{w}
+    - trade_volume_delta_zscore_{w}
+    - turnover_delta_zscore_{w}
+    - avg_trade_price_bias_zscore_{w}
+    - open_interest_change_zscore_{w}
+    - signed_trade_pressure_{w}
+    - signed_open_interest_pressure_{w}
+    - trade_ofi_resonance_{w}
+    - trade_volume_delta_slope_{w}
+    - turnover_delta_slope_{w}
+    - avg_trade_price_bias_slope_{w}
+    - open_interest_slope_{w}
+    """
+    logger.info(f"开始计算成交与持仓滚动因子 (windows={windows})")
+
+    group_keys = _group_keys(df)
+    trade_direction = (
+        pl.when(pl.col("avg_trade_price_bias") > 0)
+        .then(1.0)
+        .when(pl.col("avg_trade_price_bias") < 0)
+        .then(-1.0)
+        .otherwise(0.0)
+    )
+    exprs: list[pl.Expr] = []
+    for window in windows:
+        trade_volume_delta_mean = pl.col("trade_volume_delta").rolling_mean(window_size=window)
+        trade_volume_delta_std = pl.col("trade_volume_delta").rolling_std(window_size=window)
+        turnover_delta_mean = pl.col("turnover_delta").rolling_mean(window_size=window)
+        turnover_delta_std = pl.col("turnover_delta").rolling_std(window_size=window)
+        avg_trade_price_bias_mean = pl.col("avg_trade_price_bias").rolling_mean(window_size=window)
+        avg_trade_price_bias_std = pl.col("avg_trade_price_bias").rolling_std(window_size=window)
+        open_interest_change_mean = pl.col("open_interest_change").rolling_mean(window_size=window)
+        open_interest_change_std = pl.col("open_interest_change").rolling_std(window_size=window)
+        trade_volume_delta_zscore = (
+            (pl.col("trade_volume_delta") - trade_volume_delta_mean) / (trade_volume_delta_std + 1e-8)
+        )
+        turnover_delta_zscore = (
+            (pl.col("turnover_delta") - turnover_delta_mean) / (turnover_delta_std + 1e-8)
+        )
+        avg_trade_price_bias_zscore = (
+            (pl.col("avg_trade_price_bias") - avg_trade_price_bias_mean) / (avg_trade_price_bias_std + 1e-8)
+        )
+        open_interest_change_zscore = (
+            (pl.col("open_interest_change") - open_interest_change_mean) / (open_interest_change_std + 1e-8)
+        )
+        exprs.extend([
+            trade_volume_delta_std.alias(f"trade_volume_delta_vol_{window}"),
+            turnover_delta_std.alias(f"turnover_delta_vol_{window}"),
+            avg_trade_price_bias_std.alias(f"avg_trade_price_bias_vol_{window}"),
+            open_interest_change_std.alias(f"open_interest_change_vol_{window}"),
+            trade_volume_delta_zscore.alias(f"trade_volume_delta_zscore_{window}"),
+            turnover_delta_zscore.alias(f"turnover_delta_zscore_{window}"),
+            avg_trade_price_bias_zscore.alias(f"avg_trade_price_bias_zscore_{window}"),
+            open_interest_change_zscore.alias(f"open_interest_change_zscore_{window}"),
+            (trade_direction * trade_volume_delta_zscore).alias(f"signed_trade_pressure_{window}"),
+            (trade_direction * open_interest_change_zscore).alias(f"signed_open_interest_pressure_{window}"),
+            (avg_trade_price_bias_zscore * pl.col(f"ofi_zscore_{window}")).alias(f"trade_ofi_resonance_{window}"),
+            _endpoint_slope_expr("trade_volume_delta", window, group_keys),
+            _endpoint_slope_expr("turnover_delta", window, group_keys),
+            _endpoint_slope_expr("avg_trade_price_bias", window, group_keys),
+            _endpoint_slope_expr("open_interest", window, group_keys),
+        ])
+
+    df = df.with_columns(exprs)
+
+    logger.info("成交与持仓滚动因子计算完成")
+    logger.warning(f"注意：前 {max(windows)} 行的成交/持仓滚动因子可能为 null（滚动窗口不足）")
+    return df
+
+
 # ==================== 趋势因子 ====================
 def calculate_trend_features(df: pl.DataFrame, windows: list[int] = ROLLING_WINDOWS) -> pl.DataFrame:
     """
@@ -699,17 +867,19 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     1. K线特征因子
     2. 归一化订单量
     3. WAP因子
-    4. 价差因子
-    5. 成交量因子
-    6. 分层不平衡与队列集中度因子
-    7. VWAP因子
-    8. 对数收益率因子
-    9. 稳定性因子
-    10. 订单流失衡因子
-    11. 滚动波动率因子
-    12. 盘口斜率/凸性因子
-    13. 动态盘口微观结构因子
-    14. 趋势因子
+    4. 成交与持仓快照衍生因子
+    5. 价差因子
+    6. 成交量因子
+    7. 分层不平衡与队列集中度因子
+    8. VWAP因子
+    9. 对数收益率因子
+    10. 稳定性因子
+    11. 订单流失衡因子
+    12. 滚动波动率因子
+    13. 盘口斜率/凸性因子
+    14. 动态盘口微观结构因子
+    15. 成交与持仓滚动因子
+    16. 趋势因子
 
     Args:
         df: 合并后的原始数据（包含K线和订单簿数据）
@@ -733,37 +903,43 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     # 3. WAP 因子
     df = calculate_wap_features(df)
 
-    # 4. 价差因子
+    # 4. 成交与持仓快照衍生因子
+    df = calculate_trade_snapshot_features(df)
+
+    # 5. 价差因子
     df = calculate_spread_features(df)
 
-    # 5. 成交量因子
+    # 6. 成交量因子
     df = calculate_volume_features(df)
 
-    # 6. 分层不平衡与队列集中度因子
+    # 7. 分层不平衡与队列集中度因子
     df = calculate_depth_balance_features(df)
 
-    # 7. VWAP 因子
+    # 8. VWAP 因子
     df = calculate_vwap_features(df)
 
-    # 8. 对数收益率因子
+    # 9. 对数收益率因子
     df = calculate_log_return_features(df)
 
-    # 9. 稳定性因子
+    # 10. 稳定性因子
     df = calculate_stability_features(df)
 
-    # 10. 订单流失衡因子
+    # 11. 订单流失衡因子
     df = calculate_order_flow_features(df)
 
-    # 11. 滚动波动率因子
+    # 12. 滚动波动率因子
     df = calculate_volatility_features(df)
 
-    # 12. 盘口斜率/凸性因子
+    # 13. 盘口斜率/凸性因子
     df = calculate_book_shape_features(df)
 
-    # 13. 动态盘口微观结构因子
+    # 14. 动态盘口微观结构因子
     df = calculate_dynamic_microstructure_features(df)
 
-    # 14. 趋势因子
+    # 15. 成交与持仓滚动因子
+    df = calculate_trade_rolling_features(df)
+
+    # 16. 趋势因子
     df = calculate_trend_features(df)
 
     final_rows = len(df)
@@ -810,6 +986,12 @@ def get_feature_columns() -> List[str]:
         "bid1_queue_concentration", "ask1_queue_concentration",
         "top2_depth_share",
 
+        # 成交与持仓快照衍生因子
+        "trade_volume_delta", "turnover_delta",
+        "avg_trade_price", "avg_trade_price_bias", "avg_trade_price_bias_change",
+        "open_interest_change", "open_interest_change_ratio",
+        "open_interest_change_per_trade",
+
         # VWAP因子
         "buy_vwap", "sell_vwap",
 
@@ -840,6 +1022,23 @@ def get_feature_columns() -> List[str]:
         *[f"ofi_zscore_{window}" for window in ROLLING_WINDOWS],
         "bid_depth_slope_change", "ask_depth_slope_change",
 
+        # 成交与持仓滚动因子
+        *[f"trade_volume_delta_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"turnover_delta_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"avg_trade_price_bias_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"open_interest_change_vol_{window}" for window in ROLLING_WINDOWS],
+        *[f"trade_volume_delta_zscore_{window}" for window in ROLLING_WINDOWS],
+        *[f"turnover_delta_zscore_{window}" for window in ROLLING_WINDOWS],
+        *[f"avg_trade_price_bias_zscore_{window}" for window in ROLLING_WINDOWS],
+        *[f"open_interest_change_zscore_{window}" for window in ROLLING_WINDOWS],
+        *[f"signed_trade_pressure_{window}" for window in ROLLING_WINDOWS],
+        *[f"signed_open_interest_pressure_{window}" for window in ROLLING_WINDOWS],
+        *[f"trade_ofi_resonance_{window}" for window in ROLLING_WINDOWS],
+        *[f"trade_volume_delta_slope_{window}" for window in ROLLING_WINDOWS],
+        *[f"turnover_delta_slope_{window}" for window in ROLLING_WINDOWS],
+        *[f"avg_trade_price_bias_slope_{window}" for window in ROLLING_WINDOWS],
+        *[f"open_interest_slope_{window}" for window in ROLLING_WINDOWS],
+
         # 趋势因子
         *[
             f"{col}_trend_{window}"
@@ -867,10 +1066,15 @@ if __name__ == "__main__":
 
     test_data = {
         "timestamp": ["2023-06-30 00:00:00", "2023-06-30 00:01:00", "2023-06-30 00:02:00"],
+        "date": ["2023-06-30", "2023-06-30", "2023-06-30"],
+        "contract": ["al_demo", "al_demo", "al_demo"],
         "open_price": [2951.21, 2951.75, 2951.81],
         "high_price": [2952.54, 2952.44, 2951.81],
         "low_price": [2950.59, 2951.44, 2947.77],
         "close_price": [2951.76, 2951.80, 2949.54],
+        "total_trade_volume": [1280.0, 1295.0, 1330.0],
+        "turnover": [82027275.0, 82170510.0, 82504180.0],
+        "open_interest": [195258.0, 195264.0, 195240.0],
         "bid1_price": [5.445, 5.446, 5.447],
         "bid1_size": [532488, 532500, 532600],
         "bid2_price": [5.440, 5.441, 5.442],

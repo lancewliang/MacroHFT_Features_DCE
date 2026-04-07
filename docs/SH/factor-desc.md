@@ -33,6 +33,20 @@
 - **low_price**: 窗口最低价
 - **close_price**: 窗口收盘价
 
+### 4. 成交与持仓快照字段
+
+- **total_trade_volume**: 累计成交量快照
+  - 含义：截至当前快照时点的累计成交量
+  - 说明：不是当前窗口内新增成交量
+
+- **turnover**: 累计成交额快照
+  - 含义：截至当前快照时点的累计成交额
+  - 说明：不是当前窗口内新增成交额
+
+- **open_interest**: 持仓量快照
+  - 含义：当前快照时点的持仓量
+  - 说明：可直接使用水平值，也可转成相邻快照变化量
+
 ---
 
 ## 二、K线相关因子（Candlestick Features）
@@ -252,6 +266,126 @@
 
 - `log_return_*` 基于价格序列，不基于 `*_size_n`。
 - 第一行通常为空，因为不存在 `t-1`。
+
+---
+
+## 八点五、成交与持仓快照衍生因子（Trade Snapshot Features）
+
+说明：
+
+- `total_trade_volume`、`turnover`、`open_interest` 都按快照字段处理。
+- 成交相关因子先做相邻快照差分，再计算滚动波动率和滚动斜率。
+- 差分默认按同一 `date / contract` 分组，避免跨日累计值串联。
+
+### 1. 快照差分因子
+
+- **trade_volume_delta**: 成交量快照差分
+  - 计算：`max(total_trade_volume[t] - total_trade_volume[t-1], 0)`
+  - 含义：相邻快照间新增成交量
+  - 用途：刻画该快照区间内的真实成交活跃度
+
+- **turnover_delta**: 成交额快照差分
+  - 计算：`max(turnover[t] - turnover[t-1], 0)`
+  - 含义：相邻快照间新增成交额
+  - 用途：刻画该快照区间内的真实成交金额变化
+
+- **open_interest_change**: 持仓量变化
+  - 计算：`open_interest[t] - open_interest[t-1]`
+  - 含义：相邻快照间持仓量净变化
+  - 用途：区分增仓、减仓与换手型成交
+
+- **open_interest_change_ratio**: 持仓量变化率
+  - 计算：`open_interest_change / abs(open_interest[t-1])`
+  - 含义：相对上一时点持仓量的变化比例
+  - 用途：便于跨时段比较持仓变化强弱
+
+- **open_interest_change_per_trade**: 单位成交对应的持仓变化
+  - 计算：`open_interest_change / trade_volume_delta`
+  - 含义：每单位新增成交量对应的净增仓或减仓强度
+  - 用途：区分增仓推进、减仓回补与单纯换手
+
+### 2. 成交价格衍生因子
+
+- **avg_trade_price**: 快照区间成交均价
+  - 计算：当 `trade_volume_delta > 0` 时，`turnover_delta / trade_volume_delta`；否则回退到 `close_price`
+  - 含义：相邻两次快照之间成交的平均价格
+  - 用途：刻画成交重心相对盘口中枢的位置
+
+- **avg_trade_price_bias**: 成交均价偏离
+  - 计算：`(avg_trade_price - wap_1) / wap_1`
+  - 含义：快照区间成交均价相对一档 WAP 的归一化偏离
+  - 用途：衡量成交是否偏向主动吃单或被动成交
+
+- **avg_trade_price_bias_change**: 成交均价偏离变化率
+  - 计算：`avg_trade_price_bias[t] - avg_trade_price_bias[t-1]`
+  - 含义：相邻快照间成交方向偏离的变化幅度
+  - 用途：识别成交从偏买侧快速切向偏卖侧，或反之
+
+### 3. 滚动波动率与窗口斜率
+
+- **trade_volume_delta_vol_60 / 180 / 360**: 新增成交量滚动波动率
+  - 计算：`RollingStd(trade_volume_delta, w)`
+
+- **turnover_delta_vol_60 / 180 / 360**: 新增成交额滚动波动率
+  - 计算：`RollingStd(turnover_delta, w)`
+
+- **avg_trade_price_bias_vol_60 / 180 / 360**: 成交均价偏离滚动波动率
+  - 计算：`RollingStd(avg_trade_price_bias, w)`
+
+- **open_interest_change_vol_60 / 180 / 360**: 持仓变化滚动波动率
+  - 计算：`RollingStd(open_interest_change, w)`
+
+- **trade_volume_delta_zscore_60 / 180 / 360**: 新增成交量滚动标准化
+  - 计算：`(trade_volume_delta - RollingMean(trade_volume_delta, w)) / RollingStd(trade_volume_delta, w)`
+  - 含义：当前新增成交量相对过去窗口分布的偏离程度
+  - 用途：识别异常放量快照
+
+- **turnover_delta_zscore_60 / 180 / 360**: 新增成交额滚动标准化
+  - 计算：`(turnover_delta - RollingMean(turnover_delta, w)) / RollingStd(turnover_delta, w)`
+  - 含义：当前新增成交额相对过去窗口分布的偏离程度
+  - 用途：识别异常大额成交快照
+
+- **open_interest_change_zscore_60 / 180 / 360**: 持仓变化滚动标准化
+  - 计算：`(open_interest_change - RollingMean(open_interest_change, w)) / RollingStd(open_interest_change, w)`
+  - 含义：当前持仓变化相对过去窗口分布的偏离程度
+  - 用途：识别异常增仓或减仓
+
+- **avg_trade_price_bias_zscore_60 / 180 / 360**: 成交均价偏离滚动标准化
+  - 计算：`(avg_trade_price_bias - RollingMean(avg_trade_price_bias, w)) / RollingStd(avg_trade_price_bias, w)`
+  - 含义：当前成交均价偏离相对过去窗口分布的偏离程度
+  - 用途：识别异常强的主动成交方向偏移
+
+- **signed_trade_pressure_60 / 180 / 360**: 方向化成交压力
+  - 计算：`sign(avg_trade_price_bias) * trade_volume_delta_zscore_w`
+  - 含义：用成交均价相对盘口中枢的方向，对异常成交量做方向化
+  - 用途：识别偏买侧或偏卖侧的异常放量
+
+- **signed_open_interest_pressure_60 / 180 / 360**: 方向化持仓压力
+  - 计算：`sign(avg_trade_price_bias) * open_interest_change_zscore_w`
+  - 含义：用成交方向对异常持仓变化做方向化
+  - 用途：识别主动成交伴随的异常增仓或减仓
+
+- **trade_ofi_resonance_60 / 180 / 360**: 成交偏离与 OFI 共振
+  - 计算：`avg_trade_price_bias_zscore_w * ofi_zscore_w`
+  - 含义：异常成交方向偏离与异常订单流冲击的乘积
+  - 用途：识别成交方向和盘口订单流同向增强的强共振时刻
+
+- **trade_volume_delta_slope_60 / 180 / 360**: 新增成交量窗口斜率
+  - 计算：`(trade_volume_delta[t] - trade_volume_delta[t-w]) / w`
+
+- **turnover_delta_slope_60 / 180 / 360**: 新增成交额窗口斜率
+  - 计算：`(turnover_delta[t] - turnover_delta[t-w]) / w`
+
+- **avg_trade_price_bias_slope_60 / 180 / 360**: 成交均价偏离窗口斜率
+  - 计算：`(avg_trade_price_bias[t] - avg_trade_price_bias[t-w]) / w`
+
+- **open_interest_slope_60 / 180 / 360**: 持仓量水平窗口斜率
+  - 计算：`(open_interest[t] - open_interest[t-w]) / w`
+
+说明：
+
+- 当前统一生成 `60 / 180 / 360` 三档窗口。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
 
 ---
 
@@ -515,6 +649,7 @@
 - **流动性分析**：`price_spread`、`volume`、`buy_spread`、`sell_spread`
 - **盘口深度平衡分析**：`imbalance_top1`、`imbalance_top3`、`weighted_imbalance_inv`
 - **市场微观结构分析**：订单簿价格数量、`wap_1`、`wap_2`、`buy_vwap`、`sell_vwap`、`ofi`
+- **成交与持仓活跃度分析**：`trade_volume_delta`、`turnover_delta`、`avg_trade_price_bias`、`open_interest_change`
 - **价格预测**：`volume_imbalance`、`log_return_*`、`*_vol_{60,180,360}`、`ofi_zscore_{60,180,360}`、`*_trend_{60,180,360}`、K线特征
 - **流动性形状分析**：`best_spread_duration`、`best_quote_duration`、`bid_depth_slope`、`ask_depth_slope`、`*_book_convexity`、`top2_depth_share`
 - **风险管理**：`klen`、`price_spread`、`volume_imbalance`、`log_return_wap_1_vol_{60,180,360}`

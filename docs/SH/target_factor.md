@@ -16,6 +16,18 @@
 - `low_price`
 - `close_price`
 
+### 成交与持仓快照
+
+- `total_trade_volume`
+- `turnover`
+- `open_interest`
+
+说明：
+
+- `total_trade_volume` 与 `turnover` 都是截至当前快照时点的累计值，不是窗口内新增量。
+- `open_interest` 是当前时点的持仓量快照。
+- 成交类衍生因子先做相邻快照差分，再进入滚动统计。
+
 ## 2. K线特征
 
 ```text
@@ -39,7 +51,7 @@ ksft2 = ksft / (high_price - low_price)
 
 说明：
 
-- `max_oc` 和 `min_oc` 为中间变量，不作为最终输出因子列。
+- `max_oc` 和 `min_oc` 为中间变量，不作为最终输出因子。
 
 ## 3. 订单簿归一化特征
 
@@ -69,7 +81,82 @@ wap_2 = (ask2_size * bid2_price + bid2_size * ask2_price) / (ask2_size + bid2_si
 wap_balance = abs(wap_1 - wap_2)
 ```
 
-## 5. 价差与量能特征
+## 5. 成交与持仓快照衍生特征
+
+以下差分默认按同一 `date / contract` 分组，避免跨日累计值串联。
+
+```text
+trade_volume_delta = max(total_trade_volume[t] - total_trade_volume[t-1], 0)
+turnover_delta     = max(turnover[t] - turnover[t-1], 0)
+
+open_interest_change =
+  open_interest[t] - open_interest[t-1]
+
+open_interest_change_ratio =
+  open_interest_change / abs(open_interest[t-1])
+
+open_interest_change_per_trade =
+  open_interest_change / trade_volume_delta
+
+avg_trade_price =
+  if trade_volume_delta > 0
+  then turnover_delta / trade_volume_delta
+  else close_price
+
+avg_trade_price_bias =
+  (avg_trade_price - wap_1) / wap_1
+
+avg_trade_price_bias_change =
+  avg_trade_price_bias[t] - avg_trade_price_bias[t-1]
+```
+
+对于滚动窗口 `w ∈ {60, 180, 360}`：
+
+```text
+trade_volume_delta_vol_w   = RollingStd(trade_volume_delta, w)
+turnover_delta_vol_w       = RollingStd(turnover_delta, w)
+avg_trade_price_bias_vol_w = RollingStd(avg_trade_price_bias, w)
+open_interest_change_vol_w = RollingStd(open_interest_change, w)
+
+trade_volume_delta_zscore_w =
+  (trade_volume_delta - RollingMean(trade_volume_delta, w))
+  / RollingStd(trade_volume_delta, w)
+
+turnover_delta_zscore_w =
+  (turnover_delta - RollingMean(turnover_delta, w))
+  / RollingStd(turnover_delta, w)
+
+avg_trade_price_bias_zscore_w =
+  (avg_trade_price_bias - RollingMean(avg_trade_price_bias, w))
+  / RollingStd(avg_trade_price_bias, w)
+
+open_interest_change_zscore_w =
+  (open_interest_change - RollingMean(open_interest_change, w))
+  / RollingStd(open_interest_change, w)
+
+signed_trade_pressure_w =
+  sign(avg_trade_price_bias) * trade_volume_delta_zscore_w
+
+signed_open_interest_pressure_w =
+  sign(avg_trade_price_bias) * open_interest_change_zscore_w
+
+trade_ofi_resonance_w =
+  avg_trade_price_bias_zscore_w * ofi_zscore_w
+
+trade_volume_delta_slope_w =
+  (trade_volume_delta[t] - trade_volume_delta[t-w]) / w
+
+turnover_delta_slope_w =
+  (turnover_delta[t] - turnover_delta[t-w]) / w
+
+avg_trade_price_bias_slope_w =
+  (avg_trade_price_bias[t] - avg_trade_price_bias[t-w]) / w
+
+open_interest_slope_w =
+  (open_interest[t] - open_interest[t-w]) / w
+```
+
+## 6. 价差与量能特征
 
 ```text
 buy_spread  = abs(bid1_price - bid5_price)
@@ -82,7 +169,7 @@ sell_volume = ask1_size + ask2_size + ask3_size + ask4_size + ask5_size
 volume_imbalance = (buy_volume - sell_volume) / (buy_volume + sell_volume)
 ```
 
-## 6. VWAP 特征
+## 7. VWAP 特征
 
 ```text
 sell_vwap = ask1_size_n * ask1_price
@@ -98,7 +185,7 @@ buy_vwap  = bid1_size_n * bid1_price
           + bid5_size_n * bid5_price
 ```
 
-## 7. 对数收益率特征
+## 8. 对数收益率特征
 
 ```text
 log_return_bid1_price = log(bid1_price[t] / bid1_price[t-1])
@@ -112,9 +199,9 @@ log_return_wap_2 = log(wap_2[t] / wap_2[t-1])
 
 说明：
 
-- 这里的 `log_return_*` 基于价格序列，不基于 `*_size_n`。
+- `log_return_*` 基于价格序列，不基于 `*_size_n`。
 
-## 8. 稳定性特征
+## 9. 稳定性特征
 
 ```text
 best_spread_duration =
@@ -134,10 +221,8 @@ for w in {60, 180, 360}:
 说明：
 
 - `best_*_duration` 当前按连续快照数统计。
-- 当前实现同时生成 `60 / 180 / 360` 三档窗口。
-- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
 
-## 9. 订单流失衡特征
+## 10. 订单流失衡特征
 
 ```text
 e_b = 1(bid1_price[t] >= bid1_price[t-1]) * bid1_size[t]
@@ -147,11 +232,12 @@ e_a = 1(ask1_price[t] <= ask1_price[t-1]) * ask1_size[t]
     - 1(ask1_price[t] >= ask1_price[t-1]) * ask1_size[t-1]
 
 ofi = e_b - e_a
+
 for w in {60, 180, 360}:
   ofi_w = RollingSum(ofi, w)
 ```
 
-## 10. 盘口斜率与凸性特征
+## 11. 盘口斜率与凸性特征
 
 先定义五档累计深度：
 
@@ -188,11 +274,7 @@ bid_book_convexity = mean(y_bid_i - x_bid_i), i = 1..5
 ask_book_convexity = mean(y_ask_i - x_ask_i), i = 1..5
 ```
 
-说明：
-
-- 正值通常表示近端更厚，负值通常表示远端更厚。
-
-## 11. 分层不平衡与队列集中度特征
+## 12. 分层不平衡与队列集中度特征
 
 ```text
 B_1 = bid1_size
@@ -223,9 +305,8 @@ top2_depth_share =
 说明：
 
 - `imbalance_top5` 与五档总量口径下的 `volume_imbalance` 本质一致。
-- `weighted_imbalance_inv` 对近端档位赋予更高权重，当前使用 `w_i = 1 / i`。
 
-## 12. 动态盘口微观结构特征
+## 13. 动态盘口微观结构特征
 
 ```text
 imbalance_top3_change = imbalance_top3[t] - imbalance_top3[t-1]
@@ -241,15 +322,11 @@ bid_depth_slope_change = bid_depth_slope[t] - bid_depth_slope[t-1]
 ask_depth_slope_change = ask_depth_slope[t] - ask_depth_slope[t-1]
 ```
 
-说明：
-
-- `*_change` 为一阶差分，反映盘口状态变化速度。
-- 当前实现同时生成 `ofi_zscore_60`、`ofi_zscore_180`、`ofi_zscore_360`。
-
-## 13. 波动率特征
+## 14. 波动率特征
 
 ```text
 for w in {60, 180, 360}:
+  log_return_wap_1_vol_w = RollingStd(log_return_wap_1, w)
   log_return_wap_2_vol_w = RollingStd(log_return_wap_2, w)
   log_return_bid1_price_vol_w = RollingStd(log_return_bid1_price, w)
   price_spread_vol_w = RollingStd(price_spread, w)
@@ -258,10 +335,9 @@ for w in {60, 180, 360}:
 
 说明：
 
-- 当前统一使用 `60 / 180 / 360` 窗口滚动标准差定义波动率。
 - `ofi_vol_*` 描述的是订单流波动率，不是价格波动率。
 
-## 14. 趋势特征
+## 15. 趋势特征
 
 ```text
 Y = [
@@ -286,7 +362,7 @@ for w in {60, 180, 360}:
   `ask1_price_trend_w`、`bid1_price_trend_w`、`buy_spread_trend_w`、`sell_spread_trend_w`、
   `wap_1_trend_w`、`wap_2_trend_w`、`buy_vwap_trend_w`、`sell_vwap_trend_w`、`volume_trend_w`
 
-## 15. 最终输出因子列表
+## 16. 最终输出因子列表
 
 ```text
 kmid, kmid2, klen, kup, kup2, klow, klow2, ksft, ksft2,
@@ -300,6 +376,10 @@ imbalance_top1, imbalance_top3, imbalance_top5,
 weighted_imbalance_inv,
 bid1_queue_concentration, ask1_queue_concentration,
 top2_depth_share,
+trade_volume_delta, turnover_delta,
+avg_trade_price, avg_trade_price_bias, avg_trade_price_bias_change,
+open_interest_change, open_interest_change_ratio,
+open_interest_change_per_trade,
 buy_vwap, sell_vwap,
 log_return_bid1_price, log_return_bid2_price,
 log_return_ask1_price, log_return_ask2_price,
@@ -307,15 +387,30 @@ log_return_wap_1, log_return_wap_2,
 best_spread_duration, best_quote_duration,
 log_return_wap_1_vol_{60,180,360},
 ofi, ofi_{60,180,360},
+log_return_wap_2_vol_{60,180,360},
+log_return_bid1_price_vol_{60,180,360},
+price_spread_vol_{60,180,360},
+ofi_vol_{60,180,360},
 bid_depth_slope, ask_depth_slope,
 bid_book_convexity, ask_book_convexity,
 imbalance_top3_change, weighted_imbalance_inv_change,
 ofi_zscore_{60,180,360},
 bid_depth_slope_change, ask_depth_slope_change,
-log_return_wap_2_vol_{60,180,360},
-log_return_bid1_price_vol_{60,180,360},
-price_spread_vol_{60,180,360},
-ofi_vol_{60,180,360},
+trade_volume_delta_vol_{60,180,360},
+turnover_delta_vol_{60,180,360},
+avg_trade_price_bias_vol_{60,180,360},
+open_interest_change_vol_{60,180,360},
+trade_volume_delta_zscore_{60,180,360},
+turnover_delta_zscore_{60,180,360},
+avg_trade_price_bias_zscore_{60,180,360},
+open_interest_change_zscore_{60,180,360},
+signed_trade_pressure_{60,180,360},
+signed_open_interest_pressure_{60,180,360},
+trade_ofi_resonance_{60,180,360},
+trade_volume_delta_slope_{60,180,360},
+turnover_delta_slope_{60,180,360},
+avg_trade_price_bias_slope_{60,180,360},
+open_interest_slope_{60,180,360},
 ask1_price_trend_{60,180,360}, bid1_price_trend_{60,180,360},
 buy_spread_trend_{60,180,360}, sell_spread_trend_{60,180,360},
 wap_1_trend_{60,180,360}, wap_2_trend_{60,180,360},

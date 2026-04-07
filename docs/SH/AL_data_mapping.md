@@ -152,6 +152,7 @@ TradingDay + UpdateTime
 ```text
 timestamp,
 open_price, high_price, low_price, close_price,
+total_trade_volume, turnover, open_interest,
 bid1_price, bid1_size, bid2_price, bid2_size, bid3_price, bid3_size, bid4_price, bid4_size, bid5_price, bid5_size,
 ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price, ask4_size, ask5_price, ask5_size
 ```
@@ -177,6 +178,9 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `high_price` | 聚合窗口盘口最大价 | 基础 K 线价 |
 | `low_price` | 聚合窗口盘口最小价 | 基础 K 线价 |
 | `close_price` | 聚合窗口最后一条 `LastPrice` | 基础 K 线价 |
+| `total_trade_volume` | 聚合窗口最后一条 `Volume` | 累计成交量快照 |
+| `turnover` | 聚合窗口最后一条 `Turnover` | 累计成交额快照 |
+| `open_interest` | 聚合窗口最后一条 `OpenInterest` | 持仓量快照 |
 | `bid1_price ~ bid5_price` | `BidPrice1 ~ BidPrice5` | 买方五档价格 |
 | `bid1_size ~ bid5_size` | `BidVolume1 ~ BidVolume5` | 买方五档数量 |
 | `ask1_price ~ ask5_price` | `AskPrice1 ~ AskPrice5` | 卖方五档价格 |
@@ -217,7 +221,28 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `wap_2` | `(ask2_size * bid2_price + bid2_size * ask2_price) / (ask2_size + bid2_size)` | 第二档加权均价 |
 | `wap_balance` | `abs(wap_1 - wap_2)` | 一二档均价差 |
 
-### 4.5 价差与量能特征
+### 4.5 成交与持仓快照衍生特征
+
+这些字段都以快照口径进入因子链路：
+
+- `total_trade_volume`：截至当前快照时点的累计成交量
+- `turnover`：截至当前快照时点的累计成交额
+- `open_interest`：当前快照时点的持仓量
+
+因此，成交类因子先做相邻快照差分，再参与后续滚动统计。当前实现默认按同一 `date / contract` 分组，避免跨日累计值串联。
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `trade_volume_delta` | `max(total_trade_volume[t] - total_trade_volume[t-1], 0)` | 相邻快照间新增成交量 |
+| `turnover_delta` | `max(turnover[t] - turnover[t-1], 0)` | 相邻快照间新增成交额 |
+| `avg_trade_price` | `if trade_volume_delta > 0 then turnover_delta / trade_volume_delta else close_price` | 相邻快照区间成交均价 |
+| `avg_trade_price_bias` | `(avg_trade_price - wap_1) / wap_1` | 成交均价相对一档 WAP 的归一化偏离 |
+| `avg_trade_price_bias_change` | `avg_trade_price_bias[t] - avg_trade_price_bias[t-1]` | 成交均价偏离的一阶变化 |
+| `open_interest_change` | `open_interest[t] - open_interest[t-1]` | 相邻快照间持仓量净变化 |
+| `open_interest_change_ratio` | `open_interest_change / abs(open_interest[t-1])` | 持仓量相对变化率 |
+| `open_interest_change_per_trade` | `open_interest_change / trade_volume_delta` | 单位新增成交对应的持仓变化强度 |
+
+### 4.6 价差与量能特征
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -228,14 +253,14 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `sell_volume` | `Σ(ask_i_size)` | 卖方五档总量 |
 | `volume_imbalance` | `(buy_volume - sell_volume) / (buy_volume + sell_volume)` | 买卖量不平衡度 |
 
-### 4.6 VWAP 特征
+### 4.7 VWAP 特征
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
 | `sell_vwap` | `Σ(ask_i_size_n * ask_i_price)` | 卖方加权均价 |
 | `buy_vwap` | `Σ(bid_i_size_n * bid_i_price)` | 买方加权均价 |
 
-### 4.7 对数收益率特征
+### 4.8 对数收益率特征
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -251,7 +276,7 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - `log_return_*` 基于价格序列，不基于 `*_size_n`
 - 第一行通常为空，因为不存在 `t-1`
 
-### 4.8 稳定性因子
+### 4.9 稳定性因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -265,7 +290,7 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - 当前实现同时生成 `60 / 180 / 360` 三档窗口
 - 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
 
-### 4.9 订单流失衡因子
+### 4.10 订单流失衡因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -277,7 +302,7 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - 当前实现基于相邻快照的一档 `bid1/ask1` 价格和数量变化构造 OFI
 - 当前实现同时生成 `ofi_60`、`ofi_180`、`ofi_360`
 
-### 4.10 盘口斜率与凸性因子
+### 4.11 盘口斜率与凸性因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -304,7 +329,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - 正凸性通常表示近端更厚，负凸性通常表示远端更厚
 - 当五档价格距离为 0 或该侧总挂单量为 0 时，相关形状因子返回 `0`
 
-### 4.11 分层不平衡与队列集中度因子
+### 4.12 分层不平衡与队列集中度因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -321,7 +346,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - `imbalance_top5` 与当前 `volume_imbalance` 使用相同五档总量口径
 - `weighted_imbalance_inv` 当前使用倒数权重，强调近端深度
 
-### 4.12 动态盘口微观结构因子
+### 4.13 动态盘口微观结构因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -337,7 +362,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - 当前实现同时生成 `ofi_zscore_60`、`ofi_zscore_180`、`ofi_zscore_360`
 - 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
 
-### 4.13 波动率因子
+### 4.14 波动率因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -351,7 +376,32 @@ y_ask_i = Q_ask_i / Q_ask_5
 - 当前统一使用 `60 / 180 / 360` 窗口滚动标准差定义波动率
 - `ofi_vol_*` 描述的是订单流波动率
 
-### 4.14 趋势因子
+### 4.15 成交与持仓滚动因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `trade_volume_delta_vol_{60,180,360}` | `RollingStd(trade_volume_delta, w)` | 新增成交量多窗口滚动波动率 |
+| `turnover_delta_vol_{60,180,360}` | `RollingStd(turnover_delta, w)` | 新增成交额多窗口滚动波动率 |
+| `avg_trade_price_bias_vol_{60,180,360}` | `RollingStd(avg_trade_price_bias, w)` | 成交均价偏离多窗口滚动波动率 |
+| `open_interest_change_vol_{60,180,360}` | `RollingStd(open_interest_change, w)` | 持仓量变化多窗口滚动波动率 |
+| `trade_volume_delta_zscore_{60,180,360}` | `(trade_volume_delta - RollingMean(trade_volume_delta, w)) / RollingStd(trade_volume_delta, w)` | 新增成交量多窗口滚动标准化 |
+| `turnover_delta_zscore_{60,180,360}` | `(turnover_delta - RollingMean(turnover_delta, w)) / RollingStd(turnover_delta, w)` | 新增成交额多窗口滚动标准化 |
+| `avg_trade_price_bias_zscore_{60,180,360}` | `(avg_trade_price_bias - RollingMean(avg_trade_price_bias, w)) / RollingStd(avg_trade_price_bias, w)` | 成交均价偏离多窗口滚动标准化 |
+| `open_interest_change_zscore_{60,180,360}` | `(open_interest_change - RollingMean(open_interest_change, w)) / RollingStd(open_interest_change, w)` | 持仓量变化多窗口滚动标准化 |
+| `signed_trade_pressure_{60,180,360}` | `sign(avg_trade_price_bias) * trade_volume_delta_zscore_w` | 方向化异常成交压力 |
+| `signed_open_interest_pressure_{60,180,360}` | `sign(avg_trade_price_bias) * open_interest_change_zscore_w` | 方向化异常持仓压力 |
+| `trade_ofi_resonance_{60,180,360}` | `avg_trade_price_bias_zscore_w * ofi_zscore_w` | 异常成交偏离与异常订单流的共振强度 |
+| `trade_volume_delta_slope_{60,180,360}` | `(trade_volume_delta[t] - trade_volume_delta[t-w]) / w` | 新增成交量窗口斜率 |
+| `turnover_delta_slope_{60,180,360}` | `(turnover_delta[t] - turnover_delta[t-w]) / w` | 新增成交额窗口斜率 |
+| `avg_trade_price_bias_slope_{60,180,360}` | `(avg_trade_price_bias[t] - avg_trade_price_bias[t-w]) / w` | 成交均价偏离窗口斜率 |
+| `open_interest_slope_{60,180,360}` | `(open_interest[t] - open_interest[t-w]) / w` | 持仓量水平窗口斜率 |
+
+说明：
+
+- 当前统一生成 `60 / 180 / 360` 三档窗口。
+- 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
+
+### 4.16 趋势因子
 
 统一公式：
 
@@ -399,29 +449,32 @@ y_trend_w = (y - RollingMean(y, w)) / RollingStd(y, w)
 | WAP 衍生 | 3 |
 | 价差衍生 | 3 |
 | 量能衍生 | 3 |
+| 成交/持仓快照衍生 | 8 |
 | VWAP 衍生 | 2 |
 | 对数收益率衍生 | 6 |
-| 稳定性衍生 | 14 |
-| 订单流衍生 | 7 |
+| 稳定性衍生 | 5 |
+| 订单流衍生 | 4 |
 | 盘口形状衍生 | 4 |
 | 深度平衡衍生 | 7 |
 | 动态盘口衍生 | 7 |
 | 波动率衍生 | 12 |
+| 成交/持仓滚动衍生 | 45 |
 | 趋势衍生 | 27 |
 
-如果只看最终“特征输出”部分，衍生因子共 103 个。
+如果只看最终“特征输出”部分，衍生因子共 156 个。
 
 如果把基础字段一并统计，则常用分析字段为：
 
 ```text
 timestamp
 + open_price, high_price, low_price, close_price
++ total_trade_volume, turnover, open_interest
 + bid1_price ~ bid5_price, bid1_size ~ bid5_size
 + ask1_price ~ ask5_price, ask1_size ~ ask5_size
-+ 103 个衍生因子
++ 156 个衍生因子
 ```
 
-合计 128 个字段。
+合计 184 个字段。
 
 ---
 
@@ -461,6 +514,7 @@ timestamp
 - `calculate_kline_features()`
 - `calculate_volume_and_normalized_size()`
 - `calculate_wap_features()`
+- `calculate_trade_snapshot_features()`
 - `calculate_spread_features()`
 - `calculate_volume_features()`
 - `calculate_depth_balance_features()`
@@ -471,6 +525,7 @@ timestamp
 - `calculate_volatility_features()`
 - `calculate_book_shape_features()`
 - `calculate_dynamic_microstructure_features()`
+- `calculate_trade_rolling_features()`
 - `calculate_trend_features()`
 - `calculate_all_features()`
 
@@ -510,11 +565,12 @@ timestamp
 2. OHLC 来自窗口聚合，不直接取原始 `OpenPrice/HighPrice/LowPrice/ClosePrice`
 3. 因子计算基于预处理后的 orderbook 文件
 4. `log_return_*` 基于价格，`trend_*` 基于 `60 / 180 / 360` 窗口滚动标准化
+5. `total_trade_volume`、`turnover`、`open_interest` 都按快照字段处理，成交类因子先差分再做滚动统计
 
 以上口径已经与当前实现保持一致。
 
 ---
 
 **文档版本**: 2.0
-**最后更新**: 2026-04-06
+**最后更新**: 2026-04-07
 **维护者**: MacroHFT Features SH Team
