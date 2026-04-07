@@ -57,6 +57,23 @@ DEFAULT_FEATURE_COLUMNS = [
     "buy_spread",
     "sell_spread",
     "price_spread",
+    "bid_gap_1_2",
+    "bid_gap_2_3",
+    "bid_gap_3_4",
+    "bid_gap_4_5",
+    "ask_gap_1_2",
+    "ask_gap_2_3",
+    "ask_gap_3_4",
+    "ask_gap_4_5",
+    "bid_gap_count",
+    "max_bid_gap",
+    "bid_gap_near_far_ratio",
+    "ask_gap_count",
+    "max_ask_gap",
+    "ask_gap_near_far_ratio",
+    "gap_count_diff",
+    "max_gap_diff",
+    "gap_near_far_ratio_diff",
     "buy_volume",
     "sell_volume",
     "volume_imbalance",
@@ -71,10 +88,12 @@ DEFAULT_FEATURE_COLUMNS = [
     "turnover_delta",
     "avg_trade_price",
     "avg_trade_price_bias",
+    "avg_trade_price_mid_bias",
     "avg_trade_price_bias_change",
     "open_interest_change",
     "open_interest_change_ratio",
     "open_interest_change_per_trade",
+    "open_interest_price_link",
     "sell_vwap",
     "buy_vwap",
     "log_return_bid1_price",
@@ -89,6 +108,12 @@ DEFAULT_FEATURE_COLUMNS = [
     *[f"log_return_wap_2_vol_{window}" for window in ROLLING_WINDOWS],
     *[f"log_return_bid1_price_vol_{window}" for window in ROLLING_WINDOWS],
     *[f"price_spread_vol_{window}" for window in ROLLING_WINDOWS],
+    "spread_recovery",
+    "bid_gap_recovery",
+    "ask_gap_recovery",
+    "bid_depth_replenishment",
+    "ask_depth_replenishment",
+    "depth_replenishment_diff",
     "ofi",
     *[f"ofi_{window}" for window in ROLLING_WINDOWS],
     *[f"ofi_vol_{window}" for window in ROLLING_WINDOWS],
@@ -96,6 +121,8 @@ DEFAULT_FEATURE_COLUMNS = [
     "ask_depth_slope",
     "bid_book_convexity",
     "ask_book_convexity",
+    "depth_slope_diff",
+    "book_convexity_diff",
     "imbalance_top3_change",
     "weighted_imbalance_inv_change",
     *[f"ofi_zscore_{window}" for window in ROLLING_WINDOWS],
@@ -108,6 +135,7 @@ DEFAULT_FEATURE_COLUMNS = [
     *[f"trade_volume_delta_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"turnover_delta_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"avg_trade_price_bias_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_mid_bias_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"open_interest_change_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"signed_trade_pressure_{window}" for window in ROLLING_WINDOWS],
     *[f"signed_open_interest_pressure_{window}" for window in ROLLING_WINDOWS],
@@ -124,16 +152,29 @@ DEFAULT_FEATURE_COLUMNS = [
 ]
 
 
-VP_VAE_CATEGORY_QUOTAS = {
-    "kline_core": 4,
-    "spread": 2,
-    "trend": 2,
+VP_VAE_TARGET_COUNT = 0
+VP_VAE_CATEGORY_MINIMUMS = {
+    "kline_core": 1,
+    "spread": 1,
+    "trend": 1,
     "distribution": 1,
     "momentum": 1,
     "stability": 1,
     "order_flow": 1,
     "shape": 1,
     "trade_activity": 1,
+}
+VP_VAE_CATEGORY_MAXIMUMS = {
+    "kline_core": 4,
+    "kline_aux": 2,
+    "spread": 2,
+    "trend": 2,
+    "distribution": 2,
+    "momentum": 2,
+    "stability": 1,
+    "order_flow": 2,
+    "shape": 3,
+    "trade_activity": 2,
 }
 
 
@@ -179,6 +220,22 @@ def feature_category(feature: str) -> str:
         or feature.startswith("trade_ofi_resonance")
     ):
         return "trade_activity"
+    if feature.startswith("bid_gap_") or feature.startswith("ask_gap_"):
+        return "shape"
+    if feature in {
+        "bid_gap_count",
+        "max_bid_gap",
+        "bid_gap_near_far_ratio",
+        "ask_gap_count",
+        "max_ask_gap",
+        "ask_gap_near_far_ratio",
+        "gap_count_diff",
+        "max_gap_diff",
+        "gap_near_far_ratio_diff",
+        "depth_slope_diff",
+        "book_convexity_diff",
+    }:
+        return "shape"
     if feature in {"imbalance_top3_change", "weighted_imbalance_inv_change"}:
         return "distribution"
     if (
@@ -188,7 +245,16 @@ def feature_category(feature: str) -> str:
         or feature.endswith("_depth_share")
     ):
         return "distribution"
-    if feature in {"best_spread_duration", "best_quote_duration"} or any(
+    if feature in {
+        "best_spread_duration",
+        "best_quote_duration",
+        "spread_recovery",
+        "bid_gap_recovery",
+        "ask_gap_recovery",
+        "bid_depth_replenishment",
+        "ask_depth_replenishment",
+        "depth_replenishment_diff",
+    } or any(
         matches_suffix(feature, prefix)
         for prefix in [
             "log_return_wap_1_vol",
@@ -250,6 +316,7 @@ def feature_preference_score(feature: str) -> int:
                 "trade_volume_delta_zscore",
                 "turnover_delta_zscore",
                 "avg_trade_price_bias_zscore",
+                "avg_trade_price_mid_bias_zscore",
                 "open_interest_change_zscore",
                 "log_return_wap_1_vol",
                 "log_return_wap_2_vol",
@@ -259,7 +326,34 @@ def feature_preference_score(feature: str) -> int:
         )
     ):
         score += 2
-    if "convexity" in feature or "slope" in feature:
+    if (
+        "convexity" in feature
+        or "slope" in feature
+        or feature.startswith("bid_gap_")
+        or feature.startswith("ask_gap_")
+        or feature in {
+            "bid_gap_count",
+            "max_bid_gap",
+            "bid_gap_near_far_ratio",
+            "ask_gap_count",
+            "max_ask_gap",
+            "ask_gap_near_far_ratio",
+            "gap_count_diff",
+            "max_gap_diff",
+            "gap_near_far_ratio_diff",
+            "depth_slope_diff",
+            "book_convexity_diff",
+        }
+    ):
+        score += 1
+    if feature in {
+        "spread_recovery",
+        "bid_gap_recovery",
+        "ask_gap_recovery",
+        "bid_depth_replenishment",
+        "ask_depth_replenishment",
+        "depth_replenishment_diff",
+    }:
         score += 1
     if feature == "imbalance_top5":
         score -= 1
@@ -429,7 +523,9 @@ def build_keep_rows(shortlist_rows: list[dict]) -> list[dict]:
 def build_vp_vae_recommendation(
     keep_rows: list[dict],
     corr_rows: list[dict],
-    quotas: dict[str, int],
+    category_minimums: dict[str, int],
+    category_maximums: dict[str, int],
+    target_count: int | None,
 ) -> list[dict]:
     blocked_pairs = {
         tuple(sorted((str(row["feature_a"]), str(row["feature_b"])))): float(row["abs_corr"])
@@ -443,35 +539,71 @@ def build_vp_vae_recommendation(
     )
 
     selected: list[str] = []
-    category_counts = {key: 0 for key in quotas}
-    rows: list[dict] = []
+    selected_set: set[str] = set()
+    category_counts = {
+        key: 0 for key in set(category_minimums) | set(category_maximums)
+    }
+    decision_reason: dict[str, str] = {}
 
     def can_add(feature: str, category: str) -> tuple[bool, str]:
-        if category not in quotas:
-            return False, "category_not_used"
-        if category_counts[category] >= quotas[category]:
-            return False, "category_quota_full"
+        if category in category_maximums and category_counts[category] >= category_maximums[category]:
+            return False, "category_cap_reached"
         for chosen in selected:
             pair = tuple(sorted((feature, chosen)))
             if pair in blocked_pairs:
                 return False, f"high_corr_with:{chosen}"
         return True, "selected"
 
+    for category, minimum in category_minimums.items():
+        if minimum <= 0:
+            continue
+        for row in ranked:
+            if category_counts[category] >= minimum:
+                break
+            feature = str(row["feature"])
+            if feature in selected_set or feature_category(feature) != category:
+                continue
+            keep, reason = can_add(feature, category)
+            if keep:
+                selected.append(feature)
+                selected_set.add(feature)
+                category_counts[category] += 1
+                decision_reason[feature] = "selected_category_minimum"
+            else:
+                decision_reason.setdefault(feature, reason)
+
     for row in ranked:
+        if target_count is not None and target_count > 0 and len(selected) >= target_count:
+            break
         feature = str(row["feature"])
+        if feature in selected_set:
+            continue
         category = feature_category(feature)
         keep, reason = can_add(feature, category)
         if keep:
             selected.append(feature)
-            category_counts[category] += 1
+            selected_set.add(feature)
+            if category in category_counts:
+                category_counts[category] += 1
+            decision_reason[feature] = "selected_fill_to_target"
+        else:
+            decision_reason.setdefault(feature, reason)
+
+    rows: list[dict] = []
+    for row in ranked:
+        feature = str(row["feature"])
+        category = feature_category(feature)
         rows.append(
             {
                 "feature": feature,
                 "category": category,
                 "ic": row["ic"],
                 "abs_ic": row["abs_ic"],
-                "status": "keep" if keep else "drop",
-                "reason": reason,
+                "status": "keep" if feature in selected_set else "drop",
+                "reason": decision_reason.get(
+                    feature,
+                    "target_count_reached" if target_count is not None and target_count > 0 else "category_cap_or_rank_limit",
+                ),
             }
         )
 
@@ -494,20 +626,27 @@ def write_feature_list_txt(path: Path, rows: list[dict]) -> None:
 def write_feature_list_md(
     path: Path,
     rows: list[dict],
-    primary_horizon: int,
+    horizon: int,
+    target_count: int | None,
     title: str = "VP-VAE Recommended Feature List",
 ) -> None:
     selected = [row for row in rows if row["status"] == "keep"]
+    selection_line = (
+        f"- Guarantee category coverage first, then fill to fixed target count `{target_count}`"
+        if target_count is not None and target_count > 0
+        else "- Guarantee category coverage first, then keep remaining shortlisted features within category caps"
+    )
     lines = [
         f"# {title}",
         "",
-        f"Primary decision horizon: `{primary_horizon}`",
+        f"Decision horizon: `{horizon}`",
         "",
         "Selection logic:",
         "",
-        "- Prefer higher absolute IC on the primary horizon",
+        "- Prefer higher absolute IC on the decision horizon",
         "- Remove highly correlated duplicates",
-        "- Keep category diversity for VP-VAE inputs",
+        selection_line,
+        "- Enforce category caps to avoid one factor family dominating the final set",
         "",
         "## Final Features",
         "",
@@ -529,6 +668,24 @@ def write_feature_list_md(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_strategy_alias_outputs(
+    output_dir: Path,
+    strategy_name: str,
+    horizon: int,
+    rows: list[dict],
+    target_count: int | None,
+) -> None:
+    alias_base = output_dir / f"vp_vae_{strategy_name}_feature_list"
+    write_feature_list_txt(alias_base.with_suffix(".txt"), rows)
+    write_feature_list_md(
+        alias_base.with_suffix(".md"),
+        rows,
+        horizon,
+        target_count,
+        title=f"VP-VAE {strategy_name.title()} Feature List",
+    )
+
+
 def build_summary(
     input_path: Path,
     row_count: int,
@@ -540,6 +697,7 @@ def build_summary(
     shortlist_rows: list[dict],
     vp_vae_rows: list[dict],
     primary_horizon: int,
+    horizon_feature_rows: dict[int, list[dict]] | None = None,
 ) -> str:
     lines = [
         f"input: {input_path}",
@@ -585,6 +743,24 @@ def build_summary(
                 f"  keep {row['feature']}: ic={row['ic']:.6f} ({row['category']})"
             )
 
+    if horizon_feature_rows:
+        lines.append("")
+        lines.append("vp_vae_recommended_features_by_horizon:")
+        for horizon, rows in sorted(horizon_feature_rows.items()):
+            lines.append(f"  horizon={horizon}")
+            for row in rows:
+                if row["status"] == "keep":
+                    lines.append(
+                        f"    keep {row['feature']}: ic={row['ic']:.6f} ({row['category']})"
+                    )
+        strategy_alias = {5: "short", 30: "mid", 70: "long"}
+        available_aliases = [f"{name}=horizon{h}" for h, name in strategy_alias.items() if h in horizon_feature_rows]
+        if available_aliases:
+            lines.append("")
+            lines.append("strategy_aliases:")
+            for alias in available_aliases:
+                lines.append(f"  {alias}")
+
     return "\n".join(lines) + "\n"
 
 
@@ -592,11 +768,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate factor effectiveness and redundancy.")
     parser.add_argument("--input", type=Path, default=Path("output/train.feather"))
     parser.add_argument("--price-col", type=str, default="close_price")
-    parser.add_argument("--horizons", type=str, default="1,5,10")
+    parser.add_argument("--horizons", type=str, default="5,30,70")
     parser.add_argument("--corr-threshold", type=float, default=0.95)
     parser.add_argument("--sample-size", type=int, default=100000)
-    parser.add_argument("--primary-horizon", type=int, default=1)
-    parser.add_argument("--max-features", type=int, default=15)
+    parser.add_argument("--primary-horizon", type=int, default=5)
+    parser.add_argument("--max-features", type=int, default=50)
+    parser.add_argument("--target-count", type=int, default=VP_VAE_TARGET_COUNT)
     parser.add_argument("--output-dir", type=Path, default=Path("output/factor_validation"))
     args = parser.parse_args()
 
@@ -611,19 +788,30 @@ def main() -> int:
     corr_rows = compute_high_corr_pairs(df, feature_cols, args.corr_threshold, args.sample_size)
     ic_rows = compute_ic_table(df, feature_cols, horizons)
     ic_rank_rows = compute_primary_ic_rank(ic_rows, args.primary_horizon)
-    shortlist_rows = greedy_select_features(
-        df,
-        feature_cols,
-        primary_horizon=args.primary_horizon,
-        corr_threshold=args.corr_threshold,
-        max_features=args.max_features,
-    )
-    keep_rows = build_keep_rows(shortlist_rows)
-    vp_vae_rows = build_vp_vae_recommendation(
-        keep_rows,
-        corr_rows,
-        quotas=VP_VAE_CATEGORY_QUOTAS,
-    )
+
+    shortlist_rows_by_horizon: dict[int, list[dict]] = {}
+    keep_rows_by_horizon: dict[int, list[dict]] = {}
+    vp_vae_rows_by_horizon: dict[int, list[dict]] = {}
+    for horizon in horizons:
+        shortlist_rows_by_horizon[horizon] = greedy_select_features(
+            df,
+            feature_cols,
+            primary_horizon=horizon,
+            corr_threshold=args.corr_threshold,
+            max_features=args.max_features,
+        )
+        keep_rows_by_horizon[horizon] = build_keep_rows(shortlist_rows_by_horizon[horizon])
+        vp_vae_rows_by_horizon[horizon] = build_vp_vae_recommendation(
+            keep_rows_by_horizon[horizon],
+            corr_rows,
+            category_minimums=VP_VAE_CATEGORY_MINIMUMS,
+            category_maximums=VP_VAE_CATEGORY_MAXIMUMS,
+            target_count=(args.target_count if args.target_count > 0 else None),
+        )
+
+    shortlist_rows = shortlist_rows_by_horizon[args.primary_horizon]
+    keep_rows = keep_rows_by_horizon[args.primary_horizon]
+    vp_vae_rows = vp_vae_rows_by_horizon[args.primary_horizon]
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(args.output_dir / "feature_std.csv", std_rows, ["feature", "std"])
@@ -665,6 +853,7 @@ def main() -> int:
         args.output_dir / "vp_vae_recommended_features.md",
         vp_vae_rows,
         args.primary_horizon,
+        (args.target_count if args.target_count > 0 else None),
     )
     write_feature_list_txt(
         args.output_dir / "vp_vae_final_feature_list.txt",
@@ -674,8 +863,37 @@ def main() -> int:
         args.output_dir / "vp_vae_final_feature_list.md",
         vp_vae_rows,
         args.primary_horizon,
+        (args.target_count if args.target_count > 0 else None),
         title="VP-VAE Final Feature List",
     )
+    for horizon in horizons:
+        horizon_rows = vp_vae_rows_by_horizon[horizon]
+        write_csv(
+            args.output_dir / f"vp_vae_recommended_features_h{horizon}.csv",
+            horizon_rows,
+            ["feature", "category", "ic", "abs_ic", "status", "reason"],
+        )
+        write_feature_list_txt(
+            args.output_dir / f"vp_vae_final_feature_list_h{horizon}.txt",
+            horizon_rows,
+        )
+        write_feature_list_md(
+            args.output_dir / f"vp_vae_final_feature_list_h{horizon}.md",
+            horizon_rows,
+            horizon,
+            (args.target_count if args.target_count > 0 else None),
+            title=f"VP-VAE Final Feature List H{horizon}",
+        )
+    strategy_horizon_aliases = {5: "short", 30: "mid", 70: "long"}
+    for horizon, alias in strategy_horizon_aliases.items():
+        if horizon in vp_vae_rows_by_horizon:
+            write_strategy_alias_outputs(
+                args.output_dir,
+                alias,
+                horizon,
+                vp_vae_rows_by_horizon[horizon],
+                (args.target_count if args.target_count > 0 else None),
+            )
 
     summary = build_summary(
         args.input,
@@ -688,6 +906,7 @@ def main() -> int:
         shortlist_rows=shortlist_rows,
         vp_vae_rows=vp_vae_rows,
         primary_horizon=args.primary_horizon,
+        horizon_feature_rows=vp_vae_rows_by_horizon,
     )
     summary_path = args.output_dir / "summary.txt"
     summary_path.write_text(summary, encoding="utf-8")

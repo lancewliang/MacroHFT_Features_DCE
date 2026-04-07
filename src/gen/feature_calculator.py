@@ -31,6 +31,21 @@ def _endpoint_slope_expr(column: str, window: int, group_keys: list[str]) -> pl.
     return ((pl.col(column) - prev_value) / float(window)).alias(f"{column}_slope_{window}")
 
 
+def _tick_proxy_expr() -> pl.Expr:
+    """用盘口相邻价差的最小正值近似 tick。"""
+    return pl.min_horizontal(
+        pl.when((pl.col("bid1_price") - pl.col("bid2_price")) > 0).then(pl.col("bid1_price") - pl.col("bid2_price")),
+        pl.when((pl.col("bid2_price") - pl.col("bid3_price")) > 0).then(pl.col("bid2_price") - pl.col("bid3_price")),
+        pl.when((pl.col("bid3_price") - pl.col("bid4_price")) > 0).then(pl.col("bid3_price") - pl.col("bid4_price")),
+        pl.when((pl.col("bid4_price") - pl.col("bid5_price")) > 0).then(pl.col("bid4_price") - pl.col("bid5_price")),
+        pl.when((pl.col("ask2_price") - pl.col("ask1_price")) > 0).then(pl.col("ask2_price") - pl.col("ask1_price")),
+        pl.when((pl.col("ask3_price") - pl.col("ask2_price")) > 0).then(pl.col("ask3_price") - pl.col("ask2_price")),
+        pl.when((pl.col("ask4_price") - pl.col("ask3_price")) > 0).then(pl.col("ask4_price") - pl.col("ask3_price")),
+        pl.when((pl.col("ask5_price") - pl.col("ask4_price")) > 0).then(pl.col("ask5_price") - pl.col("ask4_price")),
+        pl.when((pl.col("ask1_price") - pl.col("bid1_price")) > 0).then(pl.col("ask1_price") - pl.col("bid1_price")),
+    ).fill_null(0.0).alias("_tick_proxy")
+
+
 # ==================== K线特征因子 ====================
 def calculate_kline_features(df: pl.DataFrame) -> pl.DataFrame:
     """
@@ -209,10 +224,12 @@ def calculate_trade_snapshot_features(df: pl.DataFrame) -> pl.DataFrame:
     - turnover_delta
     - avg_trade_price
     - avg_trade_price_bias
+    - avg_trade_price_mid_bias
     - avg_trade_price_bias_change
     - open_interest_change
     - open_interest_change_ratio
     - open_interest_change_per_trade
+    - open_interest_price_link
     """
     logger.info("开始计算成交与持仓快照衍生因子")
 
@@ -242,6 +259,7 @@ def calculate_trade_snapshot_features(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
     df = df.with_columns([
+        ((pl.col("ask1_price") + pl.col("bid1_price")) / 2.0).alias("_mid_price"),
         pl.when(pl.col("trade_volume_delta") > 0)
         .then(pl.col("turnover_delta") / (pl.col("trade_volume_delta") + 1e-8))
         .otherwise(pl.col("close_price"))
@@ -254,15 +272,18 @@ def calculate_trade_snapshot_features(df: pl.DataFrame) -> pl.DataFrame:
         .alias("open_interest_change_per_trade"),
     ])
 
-    df = df.with_columns(
-        ((pl.col("avg_trade_price") - pl.col("wap_1")) / (pl.col("wap_1") + 1e-8)).alias("avg_trade_price_bias")
-    )
+    df = df.with_columns([
+        ((pl.col("avg_trade_price") - pl.col("wap_1")) / (pl.col("wap_1") + 1e-8)).alias("avg_trade_price_bias"),
+        ((pl.col("avg_trade_price") - pl.col("_mid_price")) / (pl.col("_mid_price") + 1e-8)).alias("avg_trade_price_mid_bias"),
+    ])
 
     df = df.with_columns(
         (pl.col("avg_trade_price_bias") - _shift_within_groups(pl.col("avg_trade_price_bias"), 1, group_keys))
         .fill_null(0.0)
         .alias("avg_trade_price_bias_change")
     )
+
+    df = df.drop("_mid_price")
 
     logger.info("成交与持仓快照衍生因子计算完成")
     return df
@@ -298,6 +319,69 @@ def calculate_spread_features(df: pl.DataFrame) -> pl.DataFrame:
     ])
 
     logger.info("价差因子计算完成")
+    return df
+
+
+def calculate_gap_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    计算缺档因子。
+
+    因子:
+    - bid_gap_i_j = (bid_i - bid_j) / tick - 1
+    - ask_gap_i_j = (ask_j - ask_i) / tick - 1
+    """
+    logger.info("开始计算缺档因子")
+
+    df = df.with_columns(_tick_proxy_expr())
+
+    exprs = []
+    for i in range(1, 5):
+        bid_gap = pl.col(f"bid{i}_price") - pl.col(f"bid{i+1}_price")
+        ask_gap = pl.col(f"ask{i+1}_price") - pl.col(f"ask{i}_price")
+        exprs.extend([
+            pl.when(pl.col("_tick_proxy") > 0)
+            .then(bid_gap / (pl.col("_tick_proxy") + 1e-8) - 1.0)
+            .otherwise(0.0)
+            .alias(f"bid_gap_{i}_{i+1}"),
+            pl.when(pl.col("_tick_proxy") > 0)
+            .then(ask_gap / (pl.col("_tick_proxy") + 1e-8) - 1.0)
+            .otherwise(0.0)
+            .alias(f"ask_gap_{i}_{i+1}"),
+        ])
+
+    df = df.with_columns(exprs)
+    bid_gap_near_sum = pl.col("bid_gap_1_2") + pl.col("bid_gap_2_3")
+    bid_gap_far_sum = pl.col("bid_gap_3_4") + pl.col("bid_gap_4_5")
+    ask_gap_near_sum = pl.col("ask_gap_1_2") + pl.col("ask_gap_2_3")
+    ask_gap_far_sum = pl.col("ask_gap_3_4") + pl.col("ask_gap_4_5")
+    df = df.with_columns([
+        (
+            (pl.col("bid_gap_1_2") > 0).cast(pl.Int64)
+            + (pl.col("bid_gap_2_3") > 0).cast(pl.Int64)
+            + (pl.col("bid_gap_3_4") > 0).cast(pl.Int64)
+            + (pl.col("bid_gap_4_5") > 0).cast(pl.Int64)
+        ).alias("bid_gap_count"),
+        pl.max_horizontal("bid_gap_1_2", "bid_gap_2_3", "bid_gap_3_4", "bid_gap_4_5").alias("max_bid_gap"),
+        ((bid_gap_near_sum - bid_gap_far_sum) / (bid_gap_near_sum.abs() + bid_gap_far_sum.abs() + 1e-8))
+        .alias("bid_gap_near_far_ratio"),
+        (
+            (pl.col("ask_gap_1_2") > 0).cast(pl.Int64)
+            + (pl.col("ask_gap_2_3") > 0).cast(pl.Int64)
+            + (pl.col("ask_gap_3_4") > 0).cast(pl.Int64)
+            + (pl.col("ask_gap_4_5") > 0).cast(pl.Int64)
+        ).alias("ask_gap_count"),
+        pl.max_horizontal("ask_gap_1_2", "ask_gap_2_3", "ask_gap_3_4", "ask_gap_4_5").alias("max_ask_gap"),
+        ((ask_gap_near_sum - ask_gap_far_sum) / (ask_gap_near_sum.abs() + ask_gap_far_sum.abs() + 1e-8))
+        .alias("ask_gap_near_far_ratio"),
+    ])
+    df = df.with_columns([
+        (pl.col("bid_gap_count") - pl.col("ask_gap_count")).alias("gap_count_diff"),
+        (pl.col("max_bid_gap") - pl.col("max_ask_gap")).alias("max_gap_diff"),
+        (pl.col("bid_gap_near_far_ratio") - pl.col("ask_gap_near_far_ratio")).alias("gap_near_far_ratio_diff"),
+    ])
+    df = df.drop("_tick_proxy")
+
+    logger.info("缺档因子计算完成")
     return df
 
 
@@ -686,7 +770,57 @@ def calculate_book_shape_features(df: pl.DataFrame) -> pl.DataFrame:
         .alias("ask_book_convexity"),
     ])
 
+    df = df.with_columns([
+        (pl.col("bid_depth_slope") - pl.col("ask_depth_slope")).alias("depth_slope_diff"),
+        (pl.col("bid_book_convexity") - pl.col("ask_book_convexity")).alias("book_convexity_diff"),
+    ])
+
     logger.info("盘口斜率/凸性因子计算完成")
+    return df
+
+
+def calculate_liquidity_resilience_features(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    计算流动性韧性因子
+
+    因子:
+    - spread_recovery: 买卖价差相对上一快照的回落速度
+    - bid_gap_recovery / ask_gap_recovery: 双边最大缺档相对上一快照的回补速度
+    - bid_depth_replenishment / ask_depth_replenishment: 双边挂单深度回补比例
+    - depth_replenishment_diff: 买卖两侧深度回补差
+    """
+    logger.info("开始计算流动性韧性因子")
+
+    group_keys = _group_keys(df)
+    prev_price_spread = _shift_within_groups(pl.col("price_spread"), 1, group_keys)
+    prev_max_bid_gap = _shift_within_groups(pl.col("max_bid_gap"), 1, group_keys)
+    prev_max_ask_gap = _shift_within_groups(pl.col("max_ask_gap"), 1, group_keys)
+    prev_buy_volume = _shift_within_groups(pl.col("buy_volume"), 1, group_keys)
+    prev_sell_volume = _shift_within_groups(pl.col("sell_volume"), 1, group_keys)
+
+    df = df.with_columns([
+        ((prev_price_spread - pl.col("price_spread")) / (prev_price_spread.abs() + 1e-8))
+        .fill_null(0.0)
+        .alias("spread_recovery"),
+        ((prev_max_bid_gap - pl.col("max_bid_gap")) / (prev_max_bid_gap.abs() + 1e-8))
+        .fill_null(0.0)
+        .alias("bid_gap_recovery"),
+        ((prev_max_ask_gap - pl.col("max_ask_gap")) / (prev_max_ask_gap.abs() + 1e-8))
+        .fill_null(0.0)
+        .alias("ask_gap_recovery"),
+        ((pl.col("buy_volume") - prev_buy_volume) / (prev_buy_volume.abs() + 1e-8))
+        .fill_null(0.0)
+        .alias("bid_depth_replenishment"),
+        ((pl.col("sell_volume") - prev_sell_volume) / (prev_sell_volume.abs() + 1e-8))
+        .fill_null(0.0)
+        .alias("ask_depth_replenishment"),
+    ])
+
+    df = df.with_columns(
+        (pl.col("bid_depth_replenishment") - pl.col("ask_depth_replenishment")).alias("depth_replenishment_diff")
+    )
+
+    logger.info("流动性韧性因子计算完成")
     return df
 
 
@@ -741,6 +875,7 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
     - trade_volume_delta_zscore_{w}
     - turnover_delta_zscore_{w}
     - avg_trade_price_bias_zscore_{w}
+    - avg_trade_price_mid_bias_zscore_{w}
     - open_interest_change_zscore_{w}
     - signed_trade_pressure_{w}
     - signed_open_interest_pressure_{w}
@@ -760,7 +895,9 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
         .then(-1.0)
         .otherwise(0.0)
     )
-    exprs: list[pl.Expr] = []
+    exprs: list[pl.Expr] = [
+        (pl.col("open_interest_change_per_trade") * pl.col("log_return_wap_1")).alias("open_interest_price_link")
+    ]
     for window in windows:
         trade_volume_delta_mean = pl.col("trade_volume_delta").rolling_mean(window_size=window)
         trade_volume_delta_std = pl.col("trade_volume_delta").rolling_std(window_size=window)
@@ -768,6 +905,8 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
         turnover_delta_std = pl.col("turnover_delta").rolling_std(window_size=window)
         avg_trade_price_bias_mean = pl.col("avg_trade_price_bias").rolling_mean(window_size=window)
         avg_trade_price_bias_std = pl.col("avg_trade_price_bias").rolling_std(window_size=window)
+        avg_trade_price_mid_bias_mean = pl.col("avg_trade_price_mid_bias").rolling_mean(window_size=window)
+        avg_trade_price_mid_bias_std = pl.col("avg_trade_price_mid_bias").rolling_std(window_size=window)
         open_interest_change_mean = pl.col("open_interest_change").rolling_mean(window_size=window)
         open_interest_change_std = pl.col("open_interest_change").rolling_std(window_size=window)
         trade_volume_delta_zscore = (
@@ -778,6 +917,9 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
         )
         avg_trade_price_bias_zscore = (
             (pl.col("avg_trade_price_bias") - avg_trade_price_bias_mean) / (avg_trade_price_bias_std + 1e-8)
+        )
+        avg_trade_price_mid_bias_zscore = (
+            (pl.col("avg_trade_price_mid_bias") - avg_trade_price_mid_bias_mean) / (avg_trade_price_mid_bias_std + 1e-8)
         )
         open_interest_change_zscore = (
             (pl.col("open_interest_change") - open_interest_change_mean) / (open_interest_change_std + 1e-8)
@@ -790,6 +932,7 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
             trade_volume_delta_zscore.alias(f"trade_volume_delta_zscore_{window}"),
             turnover_delta_zscore.alias(f"turnover_delta_zscore_{window}"),
             avg_trade_price_bias_zscore.alias(f"avg_trade_price_bias_zscore_{window}"),
+            avg_trade_price_mid_bias_zscore.alias(f"avg_trade_price_mid_bias_zscore_{window}"),
             open_interest_change_zscore.alias(f"open_interest_change_zscore_{window}"),
             (trade_direction * trade_volume_delta_zscore).alias(f"signed_trade_pressure_{window}"),
             (trade_direction * open_interest_change_zscore).alias(f"signed_open_interest_pressure_{window}"),
@@ -869,17 +1012,19 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     3. WAP因子
     4. 成交与持仓快照衍生因子
     5. 价差因子
-    6. 成交量因子
-    7. 分层不平衡与队列集中度因子
-    8. VWAP因子
-    9. 对数收益率因子
-    10. 稳定性因子
-    11. 订单流失衡因子
-    12. 滚动波动率因子
-    13. 盘口斜率/凸性因子
-    14. 动态盘口微观结构因子
-    15. 成交与持仓滚动因子
-    16. 趋势因子
+    6. 缺档因子
+    7. 成交量因子
+    8. 分层不平衡与队列集中度因子
+    9. VWAP因子
+    10. 对数收益率因子
+    11. 稳定性因子
+    12. 订单流失衡因子
+    13. 滚动波动率因子
+    14. 盘口斜率/凸性因子
+    15. 流动性韧性因子
+    16. 动态盘口微观结构因子
+    17. 成交与持仓滚动因子
+    18. 趋势因子
 
     Args:
         df: 合并后的原始数据（包含K线和订单簿数据）
@@ -909,37 +1054,43 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     # 5. 价差因子
     df = calculate_spread_features(df)
 
-    # 6. 成交量因子
+    # 6. 缺档因子
+    df = calculate_gap_features(df)
+
+    # 7. 成交量因子
     df = calculate_volume_features(df)
 
-    # 7. 分层不平衡与队列集中度因子
+    # 8. 分层不平衡与队列集中度因子
     df = calculate_depth_balance_features(df)
 
-    # 8. VWAP 因子
+    # 9. VWAP 因子
     df = calculate_vwap_features(df)
 
-    # 9. 对数收益率因子
+    # 10. 对数收益率因子
     df = calculate_log_return_features(df)
 
-    # 10. 稳定性因子
+    # 11. 稳定性因子
     df = calculate_stability_features(df)
 
-    # 11. 订单流失衡因子
+    # 12. 订单流失衡因子
     df = calculate_order_flow_features(df)
 
-    # 12. 滚动波动率因子
+    # 13. 滚动波动率因子
     df = calculate_volatility_features(df)
 
-    # 13. 盘口斜率/凸性因子
+    # 14. 盘口斜率/凸性因子
     df = calculate_book_shape_features(df)
 
-    # 14. 动态盘口微观结构因子
+    # 15. 流动性韧性因子
+    df = calculate_liquidity_resilience_features(df)
+
+    # 16. 动态盘口微观结构因子
     df = calculate_dynamic_microstructure_features(df)
 
-    # 15. 成交与持仓滚动因子
+    # 17. 成交与持仓滚动因子
     df = calculate_trade_rolling_features(df)
 
-    # 16. 趋势因子
+    # 18. 趋势因子
     df = calculate_trend_features(df)
 
     final_rows = len(df)
@@ -977,6 +1128,13 @@ def get_feature_columns() -> List[str]:
         # 价差因子
         "buy_spread", "sell_spread", "price_spread",
 
+        # 缺档因子
+        "bid_gap_1_2", "bid_gap_2_3", "bid_gap_3_4", "bid_gap_4_5",
+        "ask_gap_1_2", "ask_gap_2_3", "ask_gap_3_4", "ask_gap_4_5",
+        "bid_gap_count", "max_bid_gap", "bid_gap_near_far_ratio",
+        "ask_gap_count", "max_ask_gap", "ask_gap_near_far_ratio",
+        "gap_count_diff", "max_gap_diff", "gap_near_far_ratio_diff",
+
         # 成交量因子
         "buy_volume", "sell_volume", "volume_imbalance",
 
@@ -988,9 +1146,9 @@ def get_feature_columns() -> List[str]:
 
         # 成交与持仓快照衍生因子
         "trade_volume_delta", "turnover_delta",
-        "avg_trade_price", "avg_trade_price_bias", "avg_trade_price_bias_change",
+        "avg_trade_price", "avg_trade_price_bias", "avg_trade_price_mid_bias", "avg_trade_price_bias_change",
         "open_interest_change", "open_interest_change_ratio",
-        "open_interest_change_per_trade",
+        "open_interest_change_per_trade", "open_interest_price_link",
 
         # VWAP因子
         "buy_vwap", "sell_vwap",
@@ -1004,6 +1162,12 @@ def get_feature_columns() -> List[str]:
         "best_spread_duration", "best_quote_duration",
         *[f"log_return_wap_1_vol_{window}" for window in ROLLING_WINDOWS],
 
+        # 流动性韧性因子
+        "spread_recovery",
+        "bid_gap_recovery", "ask_gap_recovery",
+        "bid_depth_replenishment", "ask_depth_replenishment",
+        "depth_replenishment_diff",
+
         # 订单流失衡因子
         "ofi", *[f"ofi_{window}" for window in ROLLING_WINDOWS],
 
@@ -1016,6 +1180,7 @@ def get_feature_columns() -> List[str]:
         # 盘口斜率/凸性因子
         "bid_depth_slope", "ask_depth_slope",
         "bid_book_convexity", "ask_book_convexity",
+        "depth_slope_diff", "book_convexity_diff",
 
         # 动态盘口微观结构因子
         "imbalance_top3_change", "weighted_imbalance_inv_change",
@@ -1030,6 +1195,7 @@ def get_feature_columns() -> List[str]:
         *[f"trade_volume_delta_zscore_{window}" for window in ROLLING_WINDOWS],
         *[f"turnover_delta_zscore_{window}" for window in ROLLING_WINDOWS],
         *[f"avg_trade_price_bias_zscore_{window}" for window in ROLLING_WINDOWS],
+        *[f"avg_trade_price_mid_bias_zscore_{window}" for window in ROLLING_WINDOWS],
         *[f"open_interest_change_zscore_{window}" for window in ROLLING_WINDOWS],
         *[f"signed_trade_pressure_{window}" for window in ROLLING_WINDOWS],
         *[f"signed_open_interest_pressure_{window}" for window in ROLLING_WINDOWS],

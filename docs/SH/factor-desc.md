@@ -187,6 +187,38 @@
   - 含义：买一卖一价差的归一化表达
   - 用途：反映流动性与交易成本
 
+### 3. 缺档因子
+
+- **bid_gap_1_2 ~ bid_gap_4_5**: 买盘缺档强度
+  - 计算：`(bid_i_price - bid_{i+1}_price) / tick - 1`
+  - 含义：相邻买盘档位之间是否出现大于 1 个 tick 的跳档
+  - 用途：直接刻画买盘深度断层
+
+- **ask_gap_1_2 ~ ask_gap_4_5**: 卖盘缺档强度
+  - 计算：`(ask_{i+1}_price - ask_i_price) / tick - 1`
+  - 含义：相邻卖盘档位之间是否出现大于 1 个 tick 的跳档
+  - 用途：刻画卖盘深度断层和流动性稀疏程度
+
+- **bid_gap_count / ask_gap_count**: 双边缺档个数
+  - 计算：分别统计四个相邻档位 gap 中大于 0 的位置数
+  - 含义：买卖两侧各自有多少处明显跳档
+  - 用途：概括盘口断层出现的广度
+
+- **max_bid_gap / max_ask_gap**: 双边最大缺档
+  - 计算：分别取四个相邻档位 gap 的最大值
+  - 含义：买卖两侧最严重的断层强度
+  - 用途：识别哪一侧存在最明显的流动性空洞
+
+- **bid_gap_near_far_ratio / ask_gap_near_far_ratio**: 双边近远端缺档相对强弱
+  - 计算：`((gap_1_2 + gap_2_3) - (gap_3_4 + gap_4_5)) / (abs(near) + abs(far))`
+  - 含义：比较该侧缺档更集中在近端还是远端
+  - 用途：判断流动性空洞更靠近最优价还是更靠深端
+
+- **gap_count_diff / max_gap_diff / gap_near_far_ratio_diff**: 双边缺档差分
+  - 计算：分别取买侧摘要减卖侧摘要
+  - 含义：刻画买卖两侧在缺档广度、最强断层和近远端分布上的不对称性
+  - 用途：作为盘口结构双边差分因子
+
 ---
 
 ## 六、量能因子（Volume Features）
@@ -304,6 +336,11 @@
   - 含义：每单位新增成交量对应的净增仓或减仓强度
   - 用途：区分增仓推进、减仓回补与单纯换手
 
+- **open_interest_price_link**: 持仓变化与价格变化联动
+  - 计算：`open_interest_change_per_trade * log_return_wap_1`
+  - 含义：单位成交持仓变化与价格变化的联动强度
+  - 用途：区分增仓推动、减仓反弹和低信息量换手
+
 ### 2. 成交价格衍生因子
 
 - **avg_trade_price**: 快照区间成交均价
@@ -315,6 +352,11 @@
   - 计算：`(avg_trade_price - wap_1) / wap_1`
   - 含义：快照区间成交均价相对一档 WAP 的归一化偏离
   - 用途：衡量成交是否偏向主动吃单或被动成交
+
+- **avg_trade_price_mid_bias**: 成交均价相对中间价偏离
+  - 计算：`(avg_trade_price - mid_price) / mid_price`
+  - 含义：快照区间成交均价相对 `mid=(ask1+bid1)/2` 的归一化偏离
+  - 用途：刻画成交更偏向买侧还是卖侧
 
 - **avg_trade_price_bias_change**: 成交均价偏离变化率
   - 计算：`avg_trade_price_bias[t] - avg_trade_price_bias[t-1]`
@@ -354,6 +396,11 @@
   - 计算：`(avg_trade_price_bias - RollingMean(avg_trade_price_bias, w)) / RollingStd(avg_trade_price_bias, w)`
   - 含义：当前成交均价偏离相对过去窗口分布的偏离程度
   - 用途：识别异常强的主动成交方向偏移
+
+- **avg_trade_price_mid_bias_zscore_60 / 180 / 360**: 成交中间价偏离滚动标准化
+  - 计算：`(avg_trade_price_mid_bias - RollingMean(avg_trade_price_mid_bias, w)) / RollingStd(avg_trade_price_mid_bias, w)`
+  - 含义：当前成交相对中间价偏离的异常程度
+  - 用途：识别异常主动买入或主动卖出
 
 - **signed_trade_pressure_60 / 180 / 360**: 方向化成交压力
   - 计算：`sign(avg_trade_price_bias) * trade_volume_delta_zscore_w`
@@ -477,6 +524,16 @@
   - 含义：卖侧累计深度曲线相对对角线 `y = x` 的平均偏离
   - 用途：正值通常表示近端更厚，负值通常表示远端更厚
 
+- **depth_slope_diff**: 双边盘口斜率差
+  - 计算：`bid_depth_slope - ask_depth_slope`
+  - 含义：买卖两侧累计深度扩张速度的相对差异
+  - 用途：判断哪一侧更偏近端厚或远端厚
+
+- **book_convexity_diff**: 双边盘口凸性差
+  - 计算：`bid_book_convexity - ask_book_convexity`
+  - 含义：买卖两侧深度曲线形状的相对差异
+  - 用途：衡量盘口厚度结构的不对称性
+
 说明：
 
 - 当前实现使用五档累计深度与归一化档位距离进行拟合。
@@ -574,7 +631,31 @@
 
 ---
 
-## 十四、波动率因子（Volatility Features）
+## 十四、流动性韧性因子（Liquidity Resilience Features）
+
+- **spread_recovery**: 价差回落速度
+  - 计算：`(price_spread[t-1] - price_spread[t]) / abs(price_spread[t-1])`
+  - 含义：上一快照若价差偏宽，当前是否出现回落
+  - 用途：刻画最优价差受冲击后的恢复速度
+
+- **bid_gap_recovery / ask_gap_recovery**: 双边最大缺档回补速度
+  - 计算：`(max_gap[t-1] - max_gap[t]) / abs(max_gap[t-1])`
+  - 含义：上一快照出现的最大缺档在当前是否被填补
+  - 用途：衡量买卖两侧流动性空洞的修复能力
+
+- **bid_depth_replenishment / ask_depth_replenishment**: 双边深度回补比例
+  - 计算：`(side_volume[t] - side_volume[t-1]) / abs(side_volume[t-1])`
+  - 含义：买卖两侧五档总深度相对上一快照的回补速度
+  - 用途：衡量冲击后挂单回流的快慢
+
+- **depth_replenishment_diff**: 双边深度回补差
+  - 计算：`bid_depth_replenishment - ask_depth_replenishment`
+  - 含义：比较买卖两侧谁的深度恢复更快
+  - 用途：作为流动性韧性的双边差分因子
+
+---
+
+## 十五、波动率因子（Volatility Features）
 
 - **log_return_wap_2_vol_60 / 180 / 360**: 第二档 WAP 对数收益率滚动波动率
   - 计算：`RollingStd(log_return_wap_2, w)`，`w ∈ {60, 180, 360}`

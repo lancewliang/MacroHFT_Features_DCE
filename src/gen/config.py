@@ -225,6 +225,15 @@ WAP_FEATURES = ["wap_1", "wap_2", "wap_balance"]
 # 价差因子
 SPREAD_FEATURES = ["buy_spread", "sell_spread", "price_spread"]
 
+# 缺档因子
+GAP_FEATURES = [
+    "bid_gap_1_2", "bid_gap_2_3", "bid_gap_3_4", "bid_gap_4_5",
+    "ask_gap_1_2", "ask_gap_2_3", "ask_gap_3_4", "ask_gap_4_5",
+    "bid_gap_count", "max_bid_gap", "bid_gap_near_far_ratio",
+    "ask_gap_count", "max_ask_gap", "ask_gap_near_far_ratio",
+    "gap_count_diff", "max_gap_diff", "gap_near_far_ratio_diff",
+]
+
 # 成交量因子
 VOLUME_FEATURES = ["buy_volume", "sell_volume", "volume_imbalance"]
 
@@ -239,10 +248,10 @@ DEPTH_BALANCE_FEATURES = [
 # 成交与持仓快照衍生因子
 TRADE_SNAPSHOT_FEATURES = [
     "trade_volume_delta", "turnover_delta",
-    "avg_trade_price", "avg_trade_price_bias",
+    "avg_trade_price", "avg_trade_price_bias", "avg_trade_price_mid_bias",
     "avg_trade_price_bias_change",
     "open_interest_change", "open_interest_change_ratio",
-    "open_interest_change_per_trade",
+    "open_interest_change_per_trade", "open_interest_price_link",
 ]
 
 # VWAP 因子
@@ -274,7 +283,16 @@ ORDER_FLOW_FEATURES = [
 # 盘口形状因子
 BOOK_SHAPE_FEATURES = [
     "bid_depth_slope", "ask_depth_slope",
-    "bid_book_convexity", "ask_book_convexity"
+    "bid_book_convexity", "ask_book_convexity",
+    "depth_slope_diff", "book_convexity_diff",
+]
+
+# 流动性韧性因子
+LIQUIDITY_RESILIENCE_FEATURES = [
+    "spread_recovery",
+    "bid_gap_recovery", "ask_gap_recovery",
+    "bid_depth_replenishment", "ask_depth_replenishment",
+    "depth_replenishment_diff",
 ]
 
 # 动态盘口微观结构因子
@@ -293,6 +311,7 @@ TRADE_ROLLING_FEATURES = [
     *[f"trade_volume_delta_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"turnover_delta_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"avg_trade_price_bias_zscore_{window}" for window in ROLLING_WINDOWS],
+    *[f"avg_trade_price_mid_bias_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"open_interest_change_zscore_{window}" for window in ROLLING_WINDOWS],
     *[f"signed_trade_pressure_{window}" for window in ROLLING_WINDOWS],
     *[f"signed_open_interest_pressure_{window}" for window in ROLLING_WINDOWS],
@@ -323,12 +342,14 @@ ALL_FEATURES = (
     ["volume"] + SIZE_N_FEATURES +
     WAP_FEATURES +
     SPREAD_FEATURES +
+    GAP_FEATURES +
     VOLUME_FEATURES +
     DEPTH_BALANCE_FEATURES +
     TRADE_SNAPSHOT_FEATURES +
     VWAP_FEATURES +
     LOG_RETURN_FEATURES +
     STABILITY_FEATURES +
+    LIQUIDITY_RESILIENCE_FEATURES +
     ORDER_FLOW_FEATURES +
     BOOK_SHAPE_FEATURES +
     DYNAMIC_MICROSTRUCTURE_FEATURES +

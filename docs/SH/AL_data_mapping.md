@@ -221,7 +221,27 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `wap_2` | `(ask2_size * bid2_price + bid2_size * ask2_price) / (ask2_size + bid2_size)` | 第二档加权均价 |
 | `wap_balance` | `abs(wap_1 - wap_2)` | 一二档均价差 |
 
-### 4.5 成交与持仓快照衍生特征
+### 4.5 缺档因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `bid_gap_1_2 ~ bid_gap_4_5` | `(bidi_price - bid{i+1}_price) / tick - 1` | 相邻买盘档位之间的缺档强度 |
+| `ask_gap_1_2 ~ ask_gap_4_5` | `(ask{i+1}_price - aski_price) / tick - 1` | 相邻卖盘档位之间的缺档强度 |
+| `bid_gap_count` | `count(bid_gap_1_2 > 0, ..., bid_gap_4_5 > 0)` | 买盘出现跳档的位置数 |
+| `max_bid_gap` | `max(bid_gap_1_2, bid_gap_2_3, bid_gap_3_4, bid_gap_4_5)` | 买盘最大缺档强度 |
+| `bid_gap_near_far_ratio` | `((bid_gap_1_2 + bid_gap_2_3) - (bid_gap_3_4 + bid_gap_4_5)) / (...)` | 买盘近端与远端缺档的相对强弱 |
+| `ask_gap_count` | `count(ask_gap_1_2 > 0, ..., ask_gap_4_5 > 0)` | 卖盘出现跳档的位置数 |
+| `max_ask_gap` | `max(ask_gap_1_2, ask_gap_2_3, ask_gap_3_4, ask_gap_4_5)` | 卖盘最大缺档强度 |
+| `ask_gap_near_far_ratio` | `((ask_gap_1_2 + ask_gap_2_3) - (ask_gap_3_4 + ask_gap_4_5)) / (...)` | 卖盘近端与远端缺档的相对强弱 |
+| `gap_count_diff` | `bid_gap_count - ask_gap_count` | 买卖两侧缺档广度差 |
+| `max_gap_diff` | `max_bid_gap - max_ask_gap` | 买卖两侧最大缺档强度差 |
+| `gap_near_far_ratio_diff` | `bid_gap_near_far_ratio - ask_gap_near_far_ratio` | 买卖两侧缺档近远端结构差 |
+
+说明：
+
+- `tick` 当前由盘口相邻价差的最小正值近似得到。
+
+### 4.6 成交与持仓快照衍生特征
 
 这些字段都以快照口径进入因子链路：
 
@@ -237,12 +257,14 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `turnover_delta` | `max(turnover[t] - turnover[t-1], 0)` | 相邻快照间新增成交额 |
 | `avg_trade_price` | `if trade_volume_delta > 0 then turnover_delta / trade_volume_delta else close_price` | 相邻快照区间成交均价 |
 | `avg_trade_price_bias` | `(avg_trade_price - wap_1) / wap_1` | 成交均价相对一档 WAP 的归一化偏离 |
+| `avg_trade_price_mid_bias` | `(avg_trade_price - mid_price) / mid_price` | 成交均价相对中间价的归一化偏离 |
 | `avg_trade_price_bias_change` | `avg_trade_price_bias[t] - avg_trade_price_bias[t-1]` | 成交均价偏离的一阶变化 |
 | `open_interest_change` | `open_interest[t] - open_interest[t-1]` | 相邻快照间持仓量净变化 |
 | `open_interest_change_ratio` | `open_interest_change / abs(open_interest[t-1])` | 持仓量相对变化率 |
 | `open_interest_change_per_trade` | `open_interest_change / trade_volume_delta` | 单位新增成交对应的持仓变化强度 |
+| `open_interest_price_link` | `open_interest_change_per_trade * log_return_wap_1` | 单位成交持仓变化与价格变化的联动强度 |
 
-### 4.6 价差与量能特征
+### 4.7 价差与量能特征
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -253,14 +275,14 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `sell_volume` | `Σ(ask_i_size)` | 卖方五档总量 |
 | `volume_imbalance` | `(buy_volume - sell_volume) / (buy_volume + sell_volume)` | 买卖量不平衡度 |
 
-### 4.7 VWAP 特征
+### 4.8 VWAP 特征
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
 | `sell_vwap` | `Σ(ask_i_size_n * ask_i_price)` | 卖方加权均价 |
 | `buy_vwap` | `Σ(bid_i_size_n * bid_i_price)` | 买方加权均价 |
 
-### 4.8 对数收益率特征
+### 4.9 对数收益率特征
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -276,7 +298,7 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - `log_return_*` 基于价格序列，不基于 `*_size_n`
 - 第一行通常为空，因为不存在 `t-1`
 
-### 4.9 稳定性因子
+### 4.10 稳定性因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -290,7 +312,7 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - 当前实现同时生成 `60 / 180 / 360` 三档窗口
 - 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
 
-### 4.10 订单流失衡因子
+### 4.11 订单流失衡因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -302,7 +324,7 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 - 当前实现基于相邻快照的一档 `bid1/ask1` 价格和数量变化构造 OFI
 - 当前实现同时生成 `ofi_60`、`ofi_180`、`ofi_360`
 
-### 4.11 盘口斜率与凸性因子
+### 4.12 盘口斜率与凸性因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -310,6 +332,8 @@ ask1_price, ask1_size, ask2_price, ask2_size, ask3_price, ask3_size, ask4_price,
 | `ask_depth_slope` | `beta in y_ask_i = alpha + beta * x_ask_i + epsilon_i` | 卖侧累计深度相对归一化价格距离的线性拟合斜率 |
 | `bid_book_convexity` | `mean(y_bid_i - x_bid_i), i=1..5` | 买侧累计深度曲线相对对角线的平均偏离 |
 | `ask_book_convexity` | `mean(y_ask_i - x_ask_i), i=1..5` | 卖侧累计深度曲线相对对角线的平均偏离 |
+| `depth_slope_diff` | `bid_depth_slope - ask_depth_slope` | 买卖两侧盘口斜率差 |
+| `book_convexity_diff` | `bid_book_convexity - ask_book_convexity` | 买卖两侧盘口凸性差 |
 
 其中：
 
@@ -329,7 +353,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - 正凸性通常表示近端更厚，负凸性通常表示远端更厚
 - 当五档价格距离为 0 或该侧总挂单量为 0 时，相关形状因子返回 `0`
 
-### 4.12 分层不平衡与队列集中度因子
+### 4.13 分层不平衡与队列集中度因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -346,7 +370,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - `imbalance_top5` 与当前 `volume_imbalance` 使用相同五档总量口径
 - `weighted_imbalance_inv` 当前使用倒数权重，强调近端深度
 
-### 4.13 动态盘口微观结构因子
+### 4.14 动态盘口微观结构因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -356,13 +380,24 @@ y_ask_i = Q_ask_i / Q_ask_5
 | `bid_depth_slope_change` | `bid_depth_slope[t] - bid_depth_slope[t-1]` | 买侧盘口斜率的一阶变化 |
 | `ask_depth_slope_change` | `ask_depth_slope[t] - ask_depth_slope[t-1]` | 卖侧盘口斜率的一阶变化 |
 
+### 4.15 流动性韧性因子
+
+| 因子名称 | 计算公式 | 说明 |
+|---------|---------|-----|
+| `spread_recovery` | `(price_spread[t-1] - price_spread[t]) / abs(price_spread[t-1])` | 买卖价差相对上一快照的回落速度 |
+| `bid_gap_recovery` | `(max_bid_gap[t-1] - max_bid_gap[t]) / abs(max_bid_gap[t-1])` | 买盘最大缺档的回补速度 |
+| `ask_gap_recovery` | `(max_ask_gap[t-1] - max_ask_gap[t]) / abs(max_ask_gap[t-1])` | 卖盘最大缺档的回补速度 |
+| `bid_depth_replenishment` | `(buy_volume[t] - buy_volume[t-1]) / abs(buy_volume[t-1])` | 买盘五档总深度回补比例 |
+| `ask_depth_replenishment` | `(sell_volume[t] - sell_volume[t-1]) / abs(sell_volume[t-1])` | 卖盘五档总深度回补比例 |
+| `depth_replenishment_diff` | `bid_depth_replenishment - ask_depth_replenishment` | 买卖两侧深度回补差 |
+
 说明：
 
 - `*_change` 第一行通常为空，因为不存在 `t-1`
 - 当前实现同时生成 `ofi_zscore_60`、`ofi_zscore_180`、`ofi_zscore_360`
 - 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足
 
-### 4.14 波动率因子
+### 4.15 波动率因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -376,7 +411,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - 当前统一使用 `60 / 180 / 360` 窗口滚动标准差定义波动率
 - `ofi_vol_*` 描述的是订单流波动率
 
-### 4.15 成交与持仓滚动因子
+### 4.16 成交与持仓滚动因子
 
 | 因子名称 | 计算公式 | 说明 |
 |---------|---------|-----|
@@ -387,6 +422,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 | `trade_volume_delta_zscore_{60,180,360}` | `(trade_volume_delta - RollingMean(trade_volume_delta, w)) / RollingStd(trade_volume_delta, w)` | 新增成交量多窗口滚动标准化 |
 | `turnover_delta_zscore_{60,180,360}` | `(turnover_delta - RollingMean(turnover_delta, w)) / RollingStd(turnover_delta, w)` | 新增成交额多窗口滚动标准化 |
 | `avg_trade_price_bias_zscore_{60,180,360}` | `(avg_trade_price_bias - RollingMean(avg_trade_price_bias, w)) / RollingStd(avg_trade_price_bias, w)` | 成交均价偏离多窗口滚动标准化 |
+| `avg_trade_price_mid_bias_zscore_{60,180,360}` | `(avg_trade_price_mid_bias - RollingMean(avg_trade_price_mid_bias, w)) / RollingStd(avg_trade_price_mid_bias, w)` | 成交中间价偏离多窗口滚动标准化 |
 | `open_interest_change_zscore_{60,180,360}` | `(open_interest_change - RollingMean(open_interest_change, w)) / RollingStd(open_interest_change, w)` | 持仓量变化多窗口滚动标准化 |
 | `signed_trade_pressure_{60,180,360}` | `sign(avg_trade_price_bias) * trade_volume_delta_zscore_w` | 方向化异常成交压力 |
 | `signed_open_interest_pressure_{60,180,360}` | `sign(avg_trade_price_bias) * open_interest_change_zscore_w` | 方向化异常持仓压力 |
@@ -401,7 +437,7 @@ y_ask_i = Q_ask_i / Q_ask_5
 - 当前统一生成 `60 / 180 / 360` 三档窗口。
 - 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
 
-### 4.16 趋势因子
+### 4.17 趋势因子
 
 统一公式：
 
@@ -447,21 +483,22 @@ y_trend_w = (y - RollingMean(y, w)) / RollingStd(y, w)
 | K 线衍生 | 9 |
 | 归一化数量衍生 | 11 |
 | WAP 衍生 | 3 |
+| 缺档衍生 | 17 |
 | 价差衍生 | 3 |
 | 量能衍生 | 3 |
-| 成交/持仓快照衍生 | 8 |
+| 成交/持仓快照衍生 | 10 |
 | VWAP 衍生 | 2 |
 | 对数收益率衍生 | 6 |
-| 稳定性衍生 | 5 |
+| 稳定性衍生 | 11 |
 | 订单流衍生 | 4 |
-| 盘口形状衍生 | 4 |
+| 盘口形状衍生 | 6 |
 | 深度平衡衍生 | 7 |
 | 动态盘口衍生 | 7 |
 | 波动率衍生 | 12 |
-| 成交/持仓滚动衍生 | 45 |
+| 成交/持仓滚动衍生 | 48 |
 | 趋势衍生 | 27 |
 
-如果只看最终“特征输出”部分，衍生因子共 156 个。
+如果只看最终“特征输出”部分，衍生因子共 186 个。
 
 如果把基础字段一并统计，则常用分析字段为：
 
@@ -471,10 +508,10 @@ timestamp
 + total_trade_volume, turnover, open_interest
 + bid1_price ~ bid5_price, bid1_size ~ bid5_size
 + ask1_price ~ ask5_price, ask1_size ~ ask5_size
-+ 156 个衍生因子
++ 172 个衍生因子
 ```
 
-合计 184 个字段。
+合计 200 个字段。
 
 ---
 

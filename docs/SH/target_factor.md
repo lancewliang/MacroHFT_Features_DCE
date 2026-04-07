@@ -81,6 +81,41 @@ wap_2 = (ask2_size * bid2_price + bid2_size * ask2_price) / (ask2_size + bid2_si
 wap_balance = abs(wap_1 - wap_2)
 ```
 
+## 4.5 缺档特征
+
+```text
+bid_gap_i_{i+1} = (bidi_price - bid{i+1}_price) / tick - 1
+ask_gap_i_{i+1} = (ask{i+1}_price - aski_price) / tick - 1
+
+bid_gap_count =
+  count(bid_gap_1_2 > 0, bid_gap_2_3 > 0, bid_gap_3_4 > 0, bid_gap_4_5 > 0)
+
+max_bid_gap =
+  max(bid_gap_1_2, bid_gap_2_3, bid_gap_3_4, bid_gap_4_5)
+
+bid_gap_near_far_ratio =
+  ((bid_gap_1_2 + bid_gap_2_3) - (bid_gap_3_4 + bid_gap_4_5))
+  / (abs(bid_gap_1_2 + bid_gap_2_3) + abs(bid_gap_3_4 + bid_gap_4_5))
+
+ask_gap_count =
+  count(ask_gap_1_2 > 0, ask_gap_2_3 > 0, ask_gap_3_4 > 0, ask_gap_4_5 > 0)
+
+max_ask_gap =
+  max(ask_gap_1_2, ask_gap_2_3, ask_gap_3_4, ask_gap_4_5)
+
+ask_gap_near_far_ratio =
+  ((ask_gap_1_2 + ask_gap_2_3) - (ask_gap_3_4 + ask_gap_4_5))
+  / (abs(ask_gap_1_2 + ask_gap_2_3) + abs(ask_gap_3_4 + ask_gap_4_5))
+
+gap_count_diff = bid_gap_count - ask_gap_count
+max_gap_diff = max_bid_gap - max_ask_gap
+gap_near_far_ratio_diff = bid_gap_near_far_ratio - ask_gap_near_far_ratio
+```
+
+说明：
+
+- `tick` 当前由盘口相邻价差的最小正值近似得到。
+
 ## 5. 成交与持仓快照衍生特征
 
 以下差分默认按同一 `date / contract` 分组，避免跨日累计值串联。
@@ -98,6 +133,9 @@ open_interest_change_ratio =
 open_interest_change_per_trade =
   open_interest_change / trade_volume_delta
 
+open_interest_price_link =
+  open_interest_change_per_trade * log_return_wap_1
+
 avg_trade_price =
   if trade_volume_delta > 0
   then turnover_delta / trade_volume_delta
@@ -105,6 +143,9 @@ avg_trade_price =
 
 avg_trade_price_bias =
   (avg_trade_price - wap_1) / wap_1
+
+avg_trade_price_mid_bias =
+  (avg_trade_price - mid_price) / mid_price
 
 avg_trade_price_bias_change =
   avg_trade_price_bias[t] - avg_trade_price_bias[t-1]
@@ -129,6 +170,10 @@ turnover_delta_zscore_w =
 avg_trade_price_bias_zscore_w =
   (avg_trade_price_bias - RollingMean(avg_trade_price_bias, w))
   / RollingStd(avg_trade_price_bias, w)
+
+avg_trade_price_mid_bias_zscore_w =
+  (avg_trade_price_mid_bias - RollingMean(avg_trade_price_mid_bias, w))
+  / RollingStd(avg_trade_price_mid_bias, w)
 
 open_interest_change_zscore_w =
   (open_interest_change - RollingMean(open_interest_change, w))
@@ -272,9 +317,34 @@ y_i = alpha + beta * x_i + epsilon_i
 ```text
 bid_book_convexity = mean(y_bid_i - x_bid_i), i = 1..5
 ask_book_convexity = mean(y_ask_i - x_ask_i), i = 1..5
+
+depth_slope_diff = bid_depth_slope - ask_depth_slope
+book_convexity_diff = bid_book_convexity - ask_book_convexity
 ```
 
-## 12. 分层不平衡与队列集中度特征
+## 12. 流动性韧性特征
+
+```text
+spread_recovery =
+  (price_spread[t-1] - price_spread[t]) / abs(price_spread[t-1])
+
+bid_gap_recovery =
+  (max_bid_gap[t-1] - max_bid_gap[t]) / abs(max_bid_gap[t-1])
+
+ask_gap_recovery =
+  (max_ask_gap[t-1] - max_ask_gap[t]) / abs(max_ask_gap[t-1])
+
+bid_depth_replenishment =
+  (buy_volume[t] - buy_volume[t-1]) / abs(buy_volume[t-1])
+
+ask_depth_replenishment =
+  (sell_volume[t] - sell_volume[t-1]) / abs(sell_volume[t-1])
+
+depth_replenishment_diff =
+  bid_depth_replenishment - ask_depth_replenishment
+```
+
+## 13. 分层不平衡与队列集中度特征
 
 ```text
 B_1 = bid1_size
@@ -306,7 +376,7 @@ top2_depth_share =
 
 - `imbalance_top5` 与五档总量口径下的 `volume_imbalance` 本质一致。
 
-## 13. 动态盘口微观结构特征
+## 14. 动态盘口微观结构特征
 
 ```text
 imbalance_top3_change = imbalance_top3[t] - imbalance_top3[t-1]
@@ -322,7 +392,7 @@ bid_depth_slope_change = bid_depth_slope[t] - bid_depth_slope[t-1]
 ask_depth_slope_change = ask_depth_slope[t] - ask_depth_slope[t-1]
 ```
 
-## 14. 波动率特征
+## 15. 波动率特征
 
 ```text
 for w in {60, 180, 360}:
@@ -337,7 +407,7 @@ for w in {60, 180, 360}:
 
 - `ofi_vol_*` 描述的是订单流波动率，不是价格波动率。
 
-## 15. 趋势特征
+## 16. 趋势特征
 
 ```text
 Y = [
@@ -371,21 +441,28 @@ bid1_size_n, bid2_size_n, bid3_size_n, bid4_size_n, bid5_size_n,
 ask1_size_n, ask2_size_n, ask3_size_n, ask4_size_n, ask5_size_n,
 wap_1, wap_2, wap_balance,
 buy_spread, sell_spread, price_spread,
+bid_gap_1_2, bid_gap_2_3, bid_gap_3_4, bid_gap_4_5,
+ask_gap_1_2, ask_gap_2_3, ask_gap_3_4, ask_gap_4_5,
+bid_gap_count, max_bid_gap, bid_gap_near_far_ratio,
+ask_gap_count, max_ask_gap, ask_gap_near_far_ratio,
+gap_count_diff, max_gap_diff, gap_near_far_ratio_diff,
 buy_volume, sell_volume, volume_imbalance,
 imbalance_top1, imbalance_top3, imbalance_top5,
 weighted_imbalance_inv,
 bid1_queue_concentration, ask1_queue_concentration,
 top2_depth_share,
 trade_volume_delta, turnover_delta,
-avg_trade_price, avg_trade_price_bias, avg_trade_price_bias_change,
+avg_trade_price, avg_trade_price_bias, avg_trade_price_mid_bias, avg_trade_price_bias_change,
 open_interest_change, open_interest_change_ratio,
-open_interest_change_per_trade,
+open_interest_change_per_trade, open_interest_price_link,
 buy_vwap, sell_vwap,
 log_return_bid1_price, log_return_bid2_price,
 log_return_ask1_price, log_return_ask2_price,
 log_return_wap_1, log_return_wap_2,
 best_spread_duration, best_quote_duration,
 log_return_wap_1_vol_{60,180,360},
+spread_recovery, bid_gap_recovery, ask_gap_recovery,
+bid_depth_replenishment, ask_depth_replenishment, depth_replenishment_diff,
 ofi, ofi_{60,180,360},
 log_return_wap_2_vol_{60,180,360},
 log_return_bid1_price_vol_{60,180,360},
@@ -393,6 +470,7 @@ price_spread_vol_{60,180,360},
 ofi_vol_{60,180,360},
 bid_depth_slope, ask_depth_slope,
 bid_book_convexity, ask_book_convexity,
+depth_slope_diff, book_convexity_diff,
 imbalance_top3_change, weighted_imbalance_inv_change,
 ofi_zscore_{60,180,360},
 bid_depth_slope_change, ask_depth_slope_change,
@@ -403,6 +481,7 @@ open_interest_change_vol_{60,180,360},
 trade_volume_delta_zscore_{60,180,360},
 turnover_delta_zscore_{60,180,360},
 avg_trade_price_bias_zscore_{60,180,360},
+avg_trade_price_mid_bias_zscore_{60,180,360},
 open_interest_change_zscore_{60,180,360},
 signed_trade_pressure_{60,180,360},
 signed_open_interest_pressure_{60,180,360},
