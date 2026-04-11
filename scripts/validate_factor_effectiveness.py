@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -22,6 +23,7 @@ import numpy as np
 import polars as pl
 
 ROLLING_WINDOWS = [60, 180, 360]
+RELATIVE_WINDOWS = [20, 60, 180, 360]
 TREND_BASE_COLUMNS = [
     "ask1_price", "bid1_price",
     "buy_spread", "sell_spread",
@@ -149,6 +151,30 @@ DEFAULT_FEATURE_COLUMNS = [
         for window in ROLLING_WINDOWS
         for col in TREND_BASE_COLUMNS
     ],
+    *[
+        f"{col}_zscore_{window}"
+        for window in RELATIVE_WINDOWS
+        for col in [
+            "close_price", "wap_1", "wap_2", "bid1_price", "ask1_price", "price_spread"
+        ]
+    ],
+    *[
+        f"{col}_ratio_{window}"
+        for window in RELATIVE_WINDOWS
+        for col in [
+            "close_price", "wap_1", "volume",
+            "trade_volume_delta", "turnover_delta", "open_interest", "klen"
+        ]
+    ],
+    "vol_regime_ratio_20_60",
+    "vol_regime_ratio_60_180",
+    "vol_regime_ratio_60_360",
+    "volume_regime_ratio_60_360",
+    "turnover_regime_ratio_60_360",
+    "spread_regime_ratio_60_360",
+    "depth_near_share",
+    "depth_near_share_zscore_60",
+    "depth_near_share_zscore_360",
 ]
 
 
@@ -176,6 +202,13 @@ VP_VAE_CATEGORY_MAXIMUMS = {
     "shape": 3,
     "trade_activity": 2,
 }
+
+
+def _trend_to_zscore_name(feature: str) -> str | None:
+    match = re.match(r"^(.+)_trend_(\d+)$", feature)
+    if not match:
+        return None
+    return f"{match.group(1)}_zscore_{match.group(2)}"
 
 
 def parse_horizons(raw: str) -> list[int]:
@@ -460,6 +493,113 @@ def compute_primary_ic_rank(ic_rows: list[dict], primary_horizon: int) -> list[d
     return ranked
 
 
+def build_ic_lookup(ic_rows: list[dict]) -> dict[int, dict[str, float]]:
+    lookup: dict[int, dict[str, float]] = {}
+    for row in ic_rows:
+        horizon = int(row["horizon"])
+        lookup.setdefault(horizon, {})[str(row["feature"])] = float(row["ic"])
+    return lookup
+
+
+def manual_duplicate_preference(feature: str, component_set: set[str]) -> int:
+    """
+    为重复特征分组打少量人工偏好分，帮助稳定 tie-break。
+    """
+    score = 0
+    zscore_name = _trend_to_zscore_name(feature)
+    if zscore_name and zscore_name in component_set:
+        score -= 6
+
+    if feature == "avg_trade_price_mid_bias" and "avg_trade_price_bias" in component_set:
+        score -= 6
+    if feature == "best_spread_duration" and "best_quote_duration" in component_set:
+        score -= 2
+    if feature == "imbalance_top5" and "volume_imbalance" in component_set:
+        score -= 1
+    if feature == "volume_imbalance" and "imbalance_top5" in component_set:
+        score += 1
+    return score
+
+
+def deduplicate_exact_corr_features(
+    feature_cols: list[str],
+    corr_rows: list[dict],
+    ic_lookup: dict[str, float],
+    exact_corr_threshold: float,
+) -> tuple[list[str], list[dict]]:
+    """
+    对接近完全重复（|corr| >= threshold）特征做组件级去重。
+    每个重复组件仅保留一个代表特征：
+    1) 主 horizon 的 |IC| 更高
+    2) 人工偏好与一般偏好分更高
+    """
+    feature_set = set(feature_cols)
+    adjacency: dict[str, set[str]] = {}
+    corr_lookup: dict[tuple[str, str], float] = {}
+    for row in corr_rows:
+        abs_corr = float(row["abs_corr"])
+        if abs_corr < exact_corr_threshold:
+            continue
+        a = str(row["feature_a"])
+        b = str(row["feature_b"])
+        if a not in feature_set or b not in feature_set:
+            continue
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+        corr_lookup[(a, b)] = abs_corr
+        corr_lookup[(b, a)] = abs_corr
+
+    visited: set[str] = set()
+    components: list[list[str]] = []
+    for feature in feature_cols:
+        if feature in visited or feature not in adjacency:
+            continue
+        stack = [feature]
+        visited.add(feature)
+        component: list[str] = []
+        while stack:
+            cur = stack.pop()
+            component.append(cur)
+            for nxt in adjacency.get(cur, set()):
+                if nxt not in visited:
+                    visited.add(nxt)
+                    stack.append(nxt)
+        if len(component) > 1:
+            components.append(component)
+
+    drop_rows: list[dict] = []
+    dropped: set[str] = set()
+    for component in components:
+        comp_set = set(component)
+        ranked = sorted(
+            component,
+            key=lambda f: (
+                -abs(float(ic_lookup.get(f, 0.0))),
+                -manual_duplicate_preference(f, comp_set),
+                -feature_preference_score(f),
+                len(f),
+                f,
+            ),
+        )
+        kept = ranked[0]
+        kept_ic = float(ic_lookup.get(kept, 0.0))
+        for feature in ranked[1:]:
+            dropped.add(feature)
+            drop_rows.append(
+                {
+                    "feature": feature,
+                    "kept_feature": kept,
+                    "feature_ic": float(ic_lookup.get(feature, 0.0)),
+                    "kept_ic": kept_ic,
+                    "abs_corr_with_kept": float(corr_lookup.get((feature, kept), np.nan)),
+                    "reason": "exact_corr_dedup",
+                }
+            )
+
+    kept_features = [feature for feature in feature_cols if feature not in dropped]
+    return kept_features, drop_rows
+
+
 def greedy_select_features(
     df: pl.DataFrame,
     feature_cols: list[str],
@@ -684,6 +824,16 @@ def write_strategy_alias_outputs(
         target_count,
         title=f"VP-VAE {strategy_name.title()} Feature List",
     )
+    # 兼容更直观的命名，便于训练脚本直接读取
+    simple_base = output_dir / f"final_feature_list_{strategy_name}"
+    write_feature_list_txt(simple_base.with_suffix(".txt"), rows)
+    write_feature_list_md(
+        simple_base.with_suffix(".md"),
+        rows,
+        horizon,
+        target_count,
+        title=f"Final Feature List ({strategy_name.title()})",
+    )
 
 
 def build_summary(
@@ -697,6 +847,8 @@ def build_summary(
     shortlist_rows: list[dict],
     vp_vae_rows: list[dict],
     primary_horizon: int,
+    exact_dedup_threshold: float,
+    dedup_rows_by_horizon: dict[int, list[dict]] | None = None,
     horizon_feature_rows: dict[int, list[dict]] | None = None,
 ) -> str:
     lines = [
@@ -713,6 +865,18 @@ def build_summary(
     lines.append(f"high_corr_pairs: {len(corr_rows)}")
     for row in corr_rows[:15]:
         lines.append(f"  {row['feature_a']} vs {row['feature_b']}: {row['corr']:.6f}")
+
+    lines.append("")
+    lines.append(f"exact_corr_dedup_threshold: {exact_dedup_threshold:.6f}")
+    if dedup_rows_by_horizon:
+        for horizon, rows in sorted(dedup_rows_by_horizon.items()):
+            lines.append(f"  horizon={horizon}: dropped={len(rows)}")
+            for row in rows[:8]:
+                lines.append(
+                    f"    drop {row['feature']} -> keep {row['kept_feature']} (|corr|={float(row['abs_corr_with_kept']):.6f})"
+                )
+    else:
+        lines.append("  horizon_dedup: none")
 
     lines.append("")
     lines.append("top_ic_by_horizon:")
@@ -773,6 +937,7 @@ def main() -> int:
     parser.add_argument("--sample-size", type=int, default=100000)
     parser.add_argument("--primary-horizon", type=int, default=5)
     parser.add_argument("--max-features", type=int, default=50)
+    parser.add_argument("--exact-dedup-threshold", type=float, default=0.9999)
     parser.add_argument("--target-count", type=int, default=VP_VAE_TARGET_COUNT)
     parser.add_argument("--output-dir", type=Path, default=Path("output/factor_validation"))
     args = parser.parse_args()
@@ -788,14 +953,23 @@ def main() -> int:
     corr_rows = compute_high_corr_pairs(df, feature_cols, args.corr_threshold, args.sample_size)
     ic_rows = compute_ic_table(df, feature_cols, horizons)
     ic_rank_rows = compute_primary_ic_rank(ic_rows, args.primary_horizon)
+    ic_lookup_by_horizon = build_ic_lookup(ic_rows)
 
     shortlist_rows_by_horizon: dict[int, list[dict]] = {}
     keep_rows_by_horizon: dict[int, list[dict]] = {}
     vp_vae_rows_by_horizon: dict[int, list[dict]] = {}
+    dedup_rows_by_horizon: dict[int, list[dict]] = {}
+    dedup_feature_pool_by_horizon: dict[int, list[str]] = {}
     for horizon in horizons:
+        dedup_feature_pool_by_horizon[horizon], dedup_rows_by_horizon[horizon] = deduplicate_exact_corr_features(
+            feature_cols,
+            corr_rows,
+            ic_lookup_by_horizon.get(horizon, {}),
+            args.exact_dedup_threshold,
+        )
         shortlist_rows_by_horizon[horizon] = greedy_select_features(
             df,
-            feature_cols,
+            dedup_feature_pool_by_horizon[horizon],
             primary_horizon=horizon,
             corr_threshold=args.corr_threshold,
             max_features=args.max_features,
@@ -869,6 +1043,11 @@ def main() -> int:
     for horizon in horizons:
         horizon_rows = vp_vae_rows_by_horizon[horizon]
         write_csv(
+            args.output_dir / f"exact_corr_dedup_h{horizon}.csv",
+            dedup_rows_by_horizon[horizon],
+            ["feature", "kept_feature", "feature_ic", "kept_ic", "abs_corr_with_kept", "reason"],
+        )
+        write_csv(
             args.output_dir / f"vp_vae_recommended_features_h{horizon}.csv",
             horizon_rows,
             ["feature", "category", "ic", "abs_ic", "status", "reason"],
@@ -883,6 +1062,10 @@ def main() -> int:
             horizon,
             (args.target_count if args.target_count > 0 else None),
             title=f"VP-VAE Final Feature List H{horizon}",
+        )
+        (args.output_dir / f"feature_pool_after_exact_dedup_h{horizon}.txt").write_text(
+            "\n".join(dedup_feature_pool_by_horizon[horizon]) + "\n",
+            encoding="utf-8",
         )
     strategy_horizon_aliases = {5: "short", 30: "mid", 70: "long"}
     for horizon, alias in strategy_horizon_aliases.items():
@@ -906,6 +1089,8 @@ def main() -> int:
         shortlist_rows=shortlist_rows,
         vp_vae_rows=vp_vae_rows,
         primary_horizon=args.primary_horizon,
+        exact_dedup_threshold=args.exact_dedup_threshold,
+        dedup_rows_by_horizon=dedup_rows_by_horizon,
         horizon_feature_rows=vp_vae_rows_by_horizon,
     )
     summary_path = args.output_dir / "summary.txt"

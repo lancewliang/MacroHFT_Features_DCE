@@ -432,7 +432,60 @@ for w in {60, 180, 360}:
   `ask1_price_trend_w`、`bid1_price_trend_w`、`buy_spread_trend_w`、`sell_spread_trend_w`、
   `wap_1_trend_w`、`wap_2_trend_w`、`buy_vwap_trend_w`、`sell_vwap_trend_w`、`volume_trend_w`
 
-## 16. 最终输出因子列表
+说明：
+
+- `ask1_price_trend_w`、`bid1_price_trend_w`、`wap_1_trend_w`、`wap_2_trend_w`
+  与后续相对化章节中的对应 `*_zscore_w` 公式一致。
+
+## 17. 相对化与市场状态（Regime）特征
+
+目标：
+
+- 将绝对价格 / 量能映射为滚动相对值，降低跨阶段价格中枢切换带来的分布漂移。
+- 用跨窗口比值刻画当前市场处于“高波动 / 高活跃 / 高流动性压力”哪种状态。
+
+滚动窗口：
+
+- `w ∈ {20, 60, 180, 360}`
+
+### 17.1 滚动标准化（z-score）
+
+```text
+for y in {close_price, wap_1, wap_2, bid1_price, ask1_price, price_spread}:
+  y_zscore_w = (y - RollingMean(y, w)) / RollingStd(y, w)
+```
+
+### 17.2 滚动均值比值（ratio）
+
+```text
+for y in {close_price, wap_1, volume, trade_volume_delta, turnover_delta, open_interest, klen}:
+  y_ratio_w = y / RollingMean(y, w)
+```
+
+### 17.3 Regime 摘要因子
+
+```text
+vol_regime_ratio_20_60  = RollingStd(log_return_wap_1, 20)  / RollingStd(log_return_wap_1, 60)
+vol_regime_ratio_60_180 = RollingStd(log_return_wap_1, 60)  / RollingStd(log_return_wap_1, 180)
+vol_regime_ratio_60_360 = RollingStd(log_return_wap_1, 60)  / RollingStd(log_return_wap_1, 360)
+
+volume_regime_ratio_60_360   = RollingMean(trade_volume_delta, 60) / RollingMean(trade_volume_delta, 360)
+turnover_regime_ratio_60_360 = RollingMean(turnover_delta, 60) / RollingMean(turnover_delta, 360)
+spread_regime_ratio_60_360   = RollingMean(price_spread, 60) / RollingMean(price_spread, 360)
+
+depth_near_share =
+  (bid1_size + ask1_size) / (buy_volume + sell_volume)
+
+depth_near_share_zscore_60 =
+  (depth_near_share - RollingMean(depth_near_share, 60))
+  / RollingStd(depth_near_share, 60)
+
+depth_near_share_zscore_360 =
+  (depth_near_share - RollingMean(depth_near_share, 360))
+  / RollingStd(depth_near_share, 360)
+```
+
+## 18. 最终输出因子列表
 
 ```text
 kmid, kmid2, klen, kup, kup2, klow, klow2, ksft, ksft2,
@@ -494,5 +547,27 @@ ask1_price_trend_{60,180,360}, bid1_price_trend_{60,180,360},
 buy_spread_trend_{60,180,360}, sell_spread_trend_{60,180,360},
 wap_1_trend_{60,180,360}, wap_2_trend_{60,180,360},
 buy_vwap_trend_{60,180,360}, sell_vwap_trend_{60,180,360},
-volume_trend_{60,180,360}
+volume_trend_{60,180,360},
+close_price_zscore_{20,60,180,360},
+wap_1_zscore_{20,60,180,360},
+wap_2_zscore_{20,60,180,360},
+bid1_price_zscore_{20,60,180,360},
+ask1_price_zscore_{20,60,180,360},
+price_spread_zscore_{20,60,180,360},
+close_price_ratio_{20,60,180,360},
+wap_1_ratio_{20,60,180,360},
+volume_ratio_{20,60,180,360},
+trade_volume_delta_ratio_{20,60,180,360},
+turnover_delta_ratio_{20,60,180,360},
+open_interest_ratio_{20,60,180,360},
+klen_ratio_{20,60,180,360},
+vol_regime_ratio_20_60,
+vol_regime_ratio_60_180,
+vol_regime_ratio_60_360,
+volume_regime_ratio_60_360,
+turnover_regime_ratio_60_360,
+spread_regime_ratio_60_360,
+depth_near_share,
+depth_near_share_zscore_60,
+depth_near_share_zscore_360
 ```

@@ -11,6 +11,7 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 ROLLING_WINDOWS = [60, 180, 360]
+RELATIVE_WINDOWS = [20, 60, 180, 360]
 
 
 def _group_keys(df: pl.DataFrame) -> list[str]:
@@ -29,6 +30,19 @@ def _endpoint_slope_expr(column: str, window: int, group_keys: list[str]) -> pl.
     """用窗口首尾差近似每步斜率。"""
     prev_value = _shift_within_groups(pl.col(column), window, group_keys)
     return ((pl.col(column) - prev_value) / float(window)).alias(f"{column}_slope_{window}")
+
+
+def _rolling_zscore_expr(column: str, window: int, alias: str) -> pl.Expr:
+    """构造滚动 z-score 表达式。"""
+    rolling_mean = pl.col(column).rolling_mean(window_size=window)
+    rolling_std = pl.col(column).rolling_std(window_size=window)
+    return ((pl.col(column) - rolling_mean) / (rolling_std + 1e-8)).alias(alias)
+
+
+def _rolling_ratio_expr(column: str, window: int, alias: str) -> pl.Expr:
+    """构造当前值相对滚动均值的比值表达式。"""
+    rolling_mean = pl.col(column).rolling_mean(window_size=window)
+    return (pl.col(column) / (rolling_mean + 1e-8)).alias(alias)
 
 
 def _tick_proxy_expr() -> pl.Expr:
@@ -1001,6 +1015,89 @@ def calculate_trend_features(df: pl.DataFrame, windows: list[int] = ROLLING_WIND
     return df
 
 
+def calculate_relative_and_regime_features(
+    df: pl.DataFrame,
+    windows: list[int] = RELATIVE_WINDOWS,
+) -> pl.DataFrame:
+    """
+    计算相对化与市场状态（regime）因子。
+
+    设计目标：
+    - 将绝对价格/量能映射到滚动相对值，降低跨阶段价格中枢变化带来的漂移
+    - 构造跨窗口状态比值，识别“当前档位”是否较历史更活跃、更波动
+
+    因子:
+    - *_zscore_{w}: 滚动标准化
+    - *_ratio_{w}: 当前值相对滚动均值
+    - vol_regime_ratio_20_60 / vol_regime_ratio_60_180 / vol_regime_ratio_60_360
+    - volume_regime_ratio_60_360 / turnover_regime_ratio_60_360 / spread_regime_ratio_60_360
+    - depth_near_share / depth_near_share_zscore_60 / depth_near_share_zscore_360
+    """
+    logger.info(f"开始计算相对化与市场状态因子 (windows={windows})")
+
+    zscore_columns = [
+        "close_price",
+        "wap_1",
+        "wap_2",
+        "bid1_price",
+        "ask1_price",
+        "price_spread",
+    ]
+    ratio_columns = [
+        "close_price",
+        "wap_1",
+        "volume",
+        "trade_volume_delta",
+        "turnover_delta",
+        "open_interest",
+        "klen",
+    ]
+
+    exprs: list[pl.Expr] = []
+    for window in windows:
+        for column in zscore_columns:
+            exprs.append(_rolling_zscore_expr(column, window, f"{column}_zscore_{window}"))
+        for column in ratio_columns:
+            exprs.append(_rolling_ratio_expr(column, window, f"{column}_ratio_{window}"))
+
+    rv_20 = pl.col("log_return_wap_1").rolling_std(window_size=20)
+    rv_60 = pl.col("log_return_wap_1").rolling_std(window_size=60)
+    rv_180 = pl.col("log_return_wap_1").rolling_std(window_size=180)
+    rv_360 = pl.col("log_return_wap_1").rolling_std(window_size=360)
+    volume_mean_60 = pl.col("trade_volume_delta").rolling_mean(window_size=60)
+    volume_mean_360 = pl.col("trade_volume_delta").rolling_mean(window_size=360)
+    turnover_mean_60 = pl.col("turnover_delta").rolling_mean(window_size=60)
+    turnover_mean_360 = pl.col("turnover_delta").rolling_mean(window_size=360)
+    spread_mean_60 = pl.col("price_spread").rolling_mean(window_size=60)
+    spread_mean_360 = pl.col("price_spread").rolling_mean(window_size=360)
+    depth_near_share = (
+        (pl.col("bid1_size") + pl.col("ask1_size"))
+        / (pl.col("buy_volume") + pl.col("sell_volume") + 1e-8)
+    )
+    depth_near_mean_60 = depth_near_share.rolling_mean(window_size=60)
+    depth_near_std_60 = depth_near_share.rolling_std(window_size=60)
+    depth_near_mean_360 = depth_near_share.rolling_mean(window_size=360)
+    depth_near_std_360 = depth_near_share.rolling_std(window_size=360)
+
+    exprs.extend([
+        (rv_20 / (rv_60 + 1e-8)).alias("vol_regime_ratio_20_60"),
+        (rv_60 / (rv_180 + 1e-8)).alias("vol_regime_ratio_60_180"),
+        (rv_60 / (rv_360 + 1e-8)).alias("vol_regime_ratio_60_360"),
+        (volume_mean_60 / (volume_mean_360 + 1e-8)).alias("volume_regime_ratio_60_360"),
+        (turnover_mean_60 / (turnover_mean_360 + 1e-8)).alias("turnover_regime_ratio_60_360"),
+        (spread_mean_60 / (spread_mean_360 + 1e-8)).alias("spread_regime_ratio_60_360"),
+        depth_near_share.alias("depth_near_share"),
+        ((depth_near_share - depth_near_mean_60) / (depth_near_std_60 + 1e-8)).alias("depth_near_share_zscore_60"),
+        ((depth_near_share - depth_near_mean_360) / (depth_near_std_360 + 1e-8)).alias("depth_near_share_zscore_360"),
+    ])
+
+    df = df.with_columns(exprs)
+
+    logger.info("相对化与市场状态因子计算完成")
+    logger.warning(f"注意：前 {max(windows + [360])} 行的相对化/状态因子可能为 null（滚动窗口不足）")
+    return df
+
+
 # ==================== 主计算函数 ====================
 def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     """
@@ -1025,6 +1122,7 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
     16. 动态盘口微观结构因子
     17. 成交与持仓滚动因子
     18. 趋势因子
+    19. 相对化与市场状态因子
 
     Args:
         df: 合并后的原始数据（包含K线和订单簿数据）
@@ -1092,6 +1190,9 @@ def calculate_all_features(df: pl.DataFrame) -> pl.DataFrame:
 
     # 18. 趋势因子
     df = calculate_trend_features(df)
+
+    # 19. 相对化与市场状态因子
+    df = calculate_relative_and_regime_features(df)
 
     final_rows = len(df)
     final_cols = len(df.columns)
@@ -1213,7 +1314,33 @@ def get_feature_columns() -> List[str]:
                 "ask1_price", "bid1_price", "buy_spread", "sell_spread",
                 "wap_1", "wap_2", "buy_vwap", "sell_vwap", "volume"
             ]
-        ]
+        ],
+
+        # 相对化与市场状态因子
+        *[
+            f"{col}_zscore_{window}"
+            for window in RELATIVE_WINDOWS
+            for col in [
+                "close_price", "wap_1", "wap_2", "bid1_price", "ask1_price", "price_spread"
+            ]
+        ],
+        *[
+            f"{col}_ratio_{window}"
+            for window in RELATIVE_WINDOWS
+            for col in [
+                "close_price", "wap_1", "volume",
+                "trade_volume_delta", "turnover_delta", "open_interest", "klen"
+            ]
+        ],
+        "vol_regime_ratio_20_60",
+        "vol_regime_ratio_60_180",
+        "vol_regime_ratio_60_360",
+        "volume_regime_ratio_60_360",
+        "turnover_regime_ratio_60_360",
+        "spread_regime_ratio_60_360",
+        "depth_near_share",
+        "depth_near_share_zscore_60",
+        "depth_near_share_zscore_360",
     ]
 
 

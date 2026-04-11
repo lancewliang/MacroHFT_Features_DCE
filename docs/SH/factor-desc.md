@@ -685,7 +685,7 @@
 
 ---
 
-## 十五、趋势因子（Trend Features）
+## 十六、趋势因子（Trend Features）
 
 趋势因子基于以下变量集合：
 
@@ -713,17 +713,77 @@
 
 - 当前实现分母使用 `RollingStd(y, w) + 1e-8`，用于避免除零。
 - 对应滚动因子在前 `w` 行可能为空，因为滚动窗口不足。
+- `ask1_price_trend_*`、`bid1_price_trend_*`、`wap_1_trend_*`、`wap_2_trend_*`
+  与相对化章节中的对应 `*_zscore_*` 公式一致，属于可替代特征。
 
 ---
 
-## 十六、因子应用说明
+## 十七、相对化与市场状态因子（Relative & Regime Features）
+
+这组因子用于应对价格中枢切换带来的分布漂移，核心思路是“绝对值转相对值”。
+
+### 1. 滚动标准化因子（z-score）
+
+- **close_price_zscore_20 / 60 / 180 / 360**
+- **wap_1_zscore_20 / 60 / 180 / 360**
+- **wap_2_zscore_20 / 60 / 180 / 360**
+- **bid1_price_zscore_20 / 60 / 180 / 360**
+- **ask1_price_zscore_20 / 60 / 180 / 360**
+- **price_spread_zscore_20 / 60 / 180 / 360**
+  - 统一计算：`(x - RollingMean(x, w)) / RollingStd(x, w)`，`w ∈ {20, 60, 180, 360}`
+  - 含义：当前值相对最近窗口分布的位置
+  - 用途：降低绝对价格抬升导致的分布偏移
+
+### 2. 滚动比值因子（ratio）
+
+- **close_price_ratio_20 / 60 / 180 / 360**
+- **wap_1_ratio_20 / 60 / 180 / 360**
+- **volume_ratio_20 / 60 / 180 / 360**
+- **trade_volume_delta_ratio_20 / 60 / 180 / 360**
+- **turnover_delta_ratio_20 / 60 / 180 / 360**
+- **open_interest_ratio_20 / 60 / 180 / 360**
+- **klen_ratio_20 / 60 / 180 / 360**
+  - 统一计算：`x / RollingMean(x, w)`，`w ∈ {20, 60, 180, 360}`
+  - 含义：当前值相对最近均值的放大倍数
+  - 用途：识别“突然放量 / 缩量、放波 / 缩波”
+
+### 3. 市场状态（regime）摘要因子
+
+- **vol_regime_ratio_20_60 / vol_regime_ratio_60_180 / vol_regime_ratio_60_360**
+  - 计算：`RollingStd(log_return_wap_1, short) / RollingStd(log_return_wap_1, long)`
+  - 含义：短窗口波动是否显著高于长窗口基线
+
+- **volume_regime_ratio_60_360**
+  - 计算：`RollingMean(trade_volume_delta, 60) / RollingMean(trade_volume_delta, 360)`
+  - 含义：成交活跃度是否切换到更高档位
+
+- **turnover_regime_ratio_60_360**
+  - 计算：`RollingMean(turnover_delta, 60) / RollingMean(turnover_delta, 360)`
+  - 含义：资金活跃度是否抬升
+
+- **spread_regime_ratio_60_360**
+  - 计算：`RollingMean(price_spread, 60) / RollingMean(price_spread, 360)`
+  - 含义：流动性紧张程度是否上升
+
+- **depth_near_share / depth_near_share_zscore_60 / depth_near_share_zscore_360**
+  - `depth_near_share = (bid1_size + ask1_size) / (buy_volume + sell_volume)`
+  - 含义：盘口深度是否向近端集中，以及该集中度的异常程度
+
+说明：
+
+- 相对化与状态因子统一使用 `+1e-8` 避免除零。
+- 这组因子通常对 `horizon=30/70` 更有效，对中长窗口稳定性有帮助。
+
+---
+
+## 十八、因子应用说明
 
 ### 1. 因子类型分类
 
 - **价格类因子**：订单簿价格、K线价格、WAP、VWAP
 - **数量类因子**：订单量、归一化订单量、买卖总量
 - **比率类因子**：价差、成交量不平衡度、分层不平衡、队列集中度、K线归一化比率
-- **动态类因子**：对数收益率、稳定性因子、波动率因子、OFI、动态盘口因子、趋势因子
+- **动态类因子**：对数收益率、稳定性因子、波动率因子、OFI、动态盘口因子、趋势因子、regime 因子
 
 ### 2. 常见应用场景
 
@@ -731,12 +791,13 @@
 - **盘口深度平衡分析**：`imbalance_top1`、`imbalance_top3`、`weighted_imbalance_inv`
 - **市场微观结构分析**：订单簿价格数量、`wap_1`、`wap_2`、`buy_vwap`、`sell_vwap`、`ofi`
 - **成交与持仓活跃度分析**：`trade_volume_delta`、`turnover_delta`、`avg_trade_price_bias`、`open_interest_change`
-- **价格预测**：`volume_imbalance`、`log_return_*`、`*_vol_{60,180,360}`、`ofi_zscore_{60,180,360}`、`*_trend_{60,180,360}`、K线特征
+- **价格预测**：`volume_imbalance`、`log_return_*`、`*_vol_{60,180,360}`、`ofi_zscore_{60,180,360}`、`*_trend_{60,180,360}`、`*_zscore_{20,60,180,360}`、`*_ratio_{20,60,180,360}`、K线特征
 - **流动性形状分析**：`best_spread_duration`、`best_quote_duration`、`bid_depth_slope`、`ask_depth_slope`、`*_book_convexity`、`top2_depth_share`
 - **风险管理**：`klen`、`price_spread`、`volume_imbalance`、`log_return_wap_1_vol_{60,180,360}`
 
 ### 3. 注意事项
 
-- 对数收益率、稳定性、OFI 和趋势因子都依赖历史序列。
-- 趋势因子是 `60 / 180 / 360` 窗口滚动标准化结果。
+- 对数收益率、稳定性、OFI、趋势、相对化和 regime 因子都依赖历史序列。
+- 趋势因子与部分 `*_zscore_*` 因子存在口径重叠，建模前建议先做去共线。
+- 实践中可直接使用 `output/factor_validation/final_feature_list_short|mid|long.txt` 作为三套去共线后的训练输入清单。
 - `max_oc` 和 `min_oc` 是中间变量，不属于最终输出列。
