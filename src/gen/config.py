@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 
 ROLLING_WINDOWS = [60, 180, 360]
+RELATIVE_WINDOWS = [20, 60, 180, 360]
 
 # ==================== 项目路径配置 ====================
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -336,6 +337,51 @@ TREND_FEATURES = [
     for col in TREND_BASE_COLUMNS
 ]
 
+# 相对化与市场状态因子
+RELATIVE_ZSCORE_BASE_COLUMNS = [
+    "close_price", "wap_1", "wap_2",
+    "bid1_price", "ask1_price", "price_spread",
+    "imbalance_top3", "weighted_imbalance_inv",
+    "max_bid_gap", "max_ask_gap", "gap_count_diff",
+    "spread_recovery", "bid_gap_recovery", "ask_gap_recovery",
+]
+RELATIVE_RATIO_BASE_COLUMNS = [
+    "close_price", "wap_1", "volume",
+    "trade_volume_delta", "turnover_delta", "open_interest", "klen",
+]
+RELATIVE_FEATURES = [
+    *[
+        f"{col}_zscore_{window}"
+        for window in RELATIVE_WINDOWS
+        for col in RELATIVE_ZSCORE_BASE_COLUMNS
+    ],
+    *[
+        f"{col}_ratio_{window}"
+        for window in RELATIVE_WINDOWS
+        for col in RELATIVE_RATIO_BASE_COLUMNS
+    ],
+    "vol_regime_ratio_20_60",
+    "vol_regime_ratio_60_180",
+    "vol_regime_ratio_60_360",
+    "volume_regime_ratio_60_360",
+    "turnover_regime_ratio_60_360",
+    "spread_regime_ratio_60_360",
+    "ofi_regime_ratio_60_360",
+    "imbalance_regime_ratio_60_360",
+    "gap_regime_ratio_60_360",
+    "depth_replenishment_regime_ratio_60_360",
+    "depth_near_share",
+    "depth_near_share_zscore_60",
+    "depth_near_share_zscore_360",
+    "price_spread_pct_60",
+    "imbalance_top3_pct_60",
+    "max_ask_gap_pct_60",
+    "spread_to_vol_ratio",
+    "ofi_to_volume_ratio",
+    "gap_to_spread_ratio",
+    "imbalance_to_depth_ratio",
+]
+
 # 所有因子列表
 ALL_FEATURES = (
     KLINE_FEATURES +
@@ -354,7 +400,8 @@ ALL_FEATURES = (
     BOOK_SHAPE_FEATURES +
     DYNAMIC_MICROSTRUCTURE_FEATURES +
     TRADE_ROLLING_FEATURES +
-    TREND_FEATURES
+    TREND_FEATURES +
+    RELATIVE_FEATURES
 )
 
 # ==================== 数据验证配置 ====================

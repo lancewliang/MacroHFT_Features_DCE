@@ -45,6 +45,23 @@ def _rolling_ratio_expr(column: str, window: int, alias: str) -> pl.Expr:
     return (pl.col(column) / (rolling_mean + 1e-8)).alias(alias)
 
 
+def _rolling_percentile_rank_expr(column: str, window: int, alias: str) -> pl.Expr:
+    """构造当前值在滚动窗口中的经验分位表达式。"""
+
+    def _percentile_rank(window_values: pl.Series) -> float | None:
+        valid = window_values.drop_nulls()
+        if len(valid) == 0:
+            return None
+        last_value = valid[-1]
+        return float((valid <= last_value).sum()) / float(len(valid))
+
+    return (
+        pl.col(column)
+        .rolling_map(_percentile_rank, window_size=window, min_samples=window)
+        .alias(alias)
+    )
+
+
 def _tick_proxy_expr() -> pl.Expr:
     """用盘口相邻价差的最小正值近似 tick。"""
     return pl.min_horizontal(
@@ -1029,9 +1046,13 @@ def calculate_relative_and_regime_features(
     因子:
     - *_zscore_{w}: 滚动标准化
     - *_ratio_{w}: 当前值相对滚动均值
+    - *_pct_60: 当前值在 60 窗口内的经验分位
     - vol_regime_ratio_20_60 / vol_regime_ratio_60_180 / vol_regime_ratio_60_360
     - volume_regime_ratio_60_360 / turnover_regime_ratio_60_360 / spread_regime_ratio_60_360
+    - ofi_regime_ratio_60_360 / imbalance_regime_ratio_60_360 / gap_regime_ratio_60_360
+    - depth_replenishment_regime_ratio_60_360
     - depth_near_share / depth_near_share_zscore_60 / depth_near_share_zscore_360
+    - spread_to_vol_ratio / ofi_to_volume_ratio / gap_to_spread_ratio / imbalance_to_depth_ratio
     """
     logger.info(f"开始计算相对化与市场状态因子 (windows={windows})")
 
@@ -1042,6 +1063,14 @@ def calculate_relative_and_regime_features(
         "bid1_price",
         "ask1_price",
         "price_spread",
+        "imbalance_top3",
+        "weighted_imbalance_inv",
+        "max_bid_gap",
+        "max_ask_gap",
+        "gap_count_diff",
+        "spread_recovery",
+        "bid_gap_recovery",
+        "ask_gap_recovery",
     ]
     ratio_columns = [
         "close_price",
@@ -1074,6 +1103,18 @@ def calculate_relative_and_regime_features(
         (pl.col("bid1_size") + pl.col("ask1_size"))
         / (pl.col("buy_volume") + pl.col("sell_volume") + 1e-8)
     )
+    max_gap = pl.max_horizontal("max_bid_gap", "max_ask_gap")
+    ofi_abs_mean_60 = pl.col("ofi").abs().rolling_mean(window_size=60)
+    ofi_abs_mean_360 = pl.col("ofi").abs().rolling_mean(window_size=360)
+    imbalance_abs_mean_60 = pl.col("imbalance_top3").abs().rolling_mean(window_size=60)
+    imbalance_abs_mean_360 = pl.col("imbalance_top3").abs().rolling_mean(window_size=360)
+    gap_mean_60 = max_gap.rolling_mean(window_size=60)
+    gap_mean_360 = max_gap.rolling_mean(window_size=360)
+    depth_replenishment_intensity = (
+        (pl.col("bid_depth_replenishment").abs() + pl.col("ask_depth_replenishment").abs()) / 2.0
+    )
+    depth_replenishment_mean_60 = depth_replenishment_intensity.rolling_mean(window_size=60)
+    depth_replenishment_mean_360 = depth_replenishment_intensity.rolling_mean(window_size=360)
     depth_near_mean_60 = depth_near_share.rolling_mean(window_size=60)
     depth_near_std_60 = depth_near_share.rolling_std(window_size=60)
     depth_near_mean_360 = depth_near_share.rolling_mean(window_size=360)
@@ -1086,9 +1127,22 @@ def calculate_relative_and_regime_features(
         (volume_mean_60 / (volume_mean_360 + 1e-8)).alias("volume_regime_ratio_60_360"),
         (turnover_mean_60 / (turnover_mean_360 + 1e-8)).alias("turnover_regime_ratio_60_360"),
         (spread_mean_60 / (spread_mean_360 + 1e-8)).alias("spread_regime_ratio_60_360"),
+        (ofi_abs_mean_60 / (ofi_abs_mean_360 + 1e-8)).alias("ofi_regime_ratio_60_360"),
+        (imbalance_abs_mean_60 / (imbalance_abs_mean_360 + 1e-8)).alias("imbalance_regime_ratio_60_360"),
+        (gap_mean_60 / (gap_mean_360 + 1e-8)).alias("gap_regime_ratio_60_360"),
+        (depth_replenishment_mean_60 / (depth_replenishment_mean_360 + 1e-8)).alias("depth_replenishment_regime_ratio_60_360"),
         depth_near_share.alias("depth_near_share"),
         ((depth_near_share - depth_near_mean_60) / (depth_near_std_60 + 1e-8)).alias("depth_near_share_zscore_60"),
         ((depth_near_share - depth_near_mean_360) / (depth_near_std_360 + 1e-8)).alias("depth_near_share_zscore_360"),
+        (pl.col("price_spread") / (rv_60 + 1e-8)).alias("spread_to_vol_ratio"),
+        (pl.col("ofi") / (pl.col("trade_volume_delta") + 1e-8)).alias("ofi_to_volume_ratio"),
+        (max_gap / (pl.col("price_spread").abs() + 1e-8)).alias("gap_to_spread_ratio"),
+        (pl.col("imbalance_top3") / (depth_near_share + 1e-8)).alias("imbalance_to_depth_ratio"),
+    ])
+    exprs.extend([
+        _rolling_percentile_rank_expr("price_spread", 60, "price_spread_pct_60"),
+        _rolling_percentile_rank_expr("imbalance_top3", 60, "imbalance_top3_pct_60"),
+        _rolling_percentile_rank_expr("max_ask_gap", 60, "max_ask_gap_pct_60"),
     ])
 
     df = df.with_columns(exprs)
@@ -1321,7 +1375,10 @@ def get_feature_columns() -> List[str]:
             f"{col}_zscore_{window}"
             for window in RELATIVE_WINDOWS
             for col in [
-                "close_price", "wap_1", "wap_2", "bid1_price", "ask1_price", "price_spread"
+                "close_price", "wap_1", "wap_2", "bid1_price", "ask1_price", "price_spread",
+                "imbalance_top3", "weighted_imbalance_inv",
+                "max_bid_gap", "max_ask_gap", "gap_count_diff",
+                "spread_recovery", "bid_gap_recovery", "ask_gap_recovery",
             ]
         ],
         *[
@@ -1338,9 +1395,20 @@ def get_feature_columns() -> List[str]:
         "volume_regime_ratio_60_360",
         "turnover_regime_ratio_60_360",
         "spread_regime_ratio_60_360",
+        "ofi_regime_ratio_60_360",
+        "imbalance_regime_ratio_60_360",
+        "gap_regime_ratio_60_360",
+        "depth_replenishment_regime_ratio_60_360",
         "depth_near_share",
         "depth_near_share_zscore_60",
         "depth_near_share_zscore_360",
+        "price_spread_pct_60",
+        "imbalance_top3_pct_60",
+        "max_ask_gap_pct_60",
+        "spread_to_vol_ratio",
+        "ofi_to_volume_ratio",
+        "gap_to_spread_ratio",
+        "imbalance_to_depth_ratio",
     ]
 
 
