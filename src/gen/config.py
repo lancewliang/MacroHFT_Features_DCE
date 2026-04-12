@@ -341,13 +341,20 @@ TREND_FEATURES = [
 RELATIVE_ZSCORE_BASE_COLUMNS = [
     "close_price", "wap_1", "wap_2",
     "bid1_price", "ask1_price", "price_spread",
+    "buy_volume",
     "imbalance_top3", "weighted_imbalance_inv",
+    "bid_gap_near_far_ratio", "ask_gap_near_far_ratio",
     "max_bid_gap", "max_ask_gap", "gap_count_diff",
     "spread_recovery", "bid_gap_recovery", "ask_gap_recovery",
+    *[f"turnover_delta_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"ofi_vol_{window}" for window in ROLLING_WINDOWS],
 ]
 RELATIVE_RATIO_BASE_COLUMNS = [
-    "close_price", "wap_1", "volume",
+    "close_price", "wap_1", "volume", "buy_volume",
     "trade_volume_delta", "turnover_delta", "open_interest", "klen",
+    "bid_gap_near_far_ratio", "ask_gap_near_far_ratio",
+    *[f"turnover_delta_vol_{window}" for window in ROLLING_WINDOWS],
+    *[f"ofi_vol_{window}" for window in ROLLING_WINDOWS],
 ]
 RELATIVE_FEATURES = [
     *[

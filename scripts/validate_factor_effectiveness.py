@@ -155,15 +155,21 @@ DEFAULT_FEATURE_COLUMNS = [
         f"{col}_zscore_{window}"
         for window in RELATIVE_WINDOWS
         for col in [
-            "close_price", "wap_1", "wap_2", "bid1_price", "ask1_price", "price_spread"
+            "close_price", "wap_1", "wap_2", "bid1_price", "ask1_price", "price_spread",
+            "buy_volume", "bid_gap_near_far_ratio", "ask_gap_near_far_ratio",
+            *[f"turnover_delta_vol_{rolling_window}" for rolling_window in ROLLING_WINDOWS],
+            *[f"ofi_vol_{rolling_window}" for rolling_window in ROLLING_WINDOWS],
         ]
     ],
     *[
         f"{col}_ratio_{window}"
         for window in RELATIVE_WINDOWS
         for col in [
-            "close_price", "wap_1", "volume",
-            "trade_volume_delta", "turnover_delta", "open_interest", "klen"
+            "close_price", "wap_1", "volume", "buy_volume",
+            "trade_volume_delta", "turnover_delta", "open_interest", "klen",
+            "bid_gap_near_far_ratio", "ask_gap_near_far_ratio",
+            *[f"turnover_delta_vol_{rolling_window}" for rolling_window in ROLLING_WINDOWS],
+            *[f"ofi_vol_{rolling_window}" for rolling_window in ROLLING_WINDOWS],
         ]
     ],
     "vol_regime_ratio_20_60",
@@ -203,6 +209,193 @@ VP_VAE_CATEGORY_MAXIMUMS = {
     "trade_activity": 2,
 }
 
+SHORT_TEMPLATE_CATEGORY_MINIMUMS = {
+    "kline_core": 2,
+    "kline_aux": 1,
+    "spread": 1,
+    "trend": 1,
+    "distribution": 1,
+    "stability": 1,
+    "shape": 2,
+    "trade_activity": 1,
+}
+SHORT_TEMPLATE_CATEGORY_MAXIMUMS = {
+    "kline_core": 5,
+    "kline_aux": 2,
+    "spread": 1,
+    "trend": 3,
+    "distribution": 3,
+    "momentum": 0,
+    "stability": 2,
+    "order_flow": 0,
+    "shape": 4,
+    "trade_activity": 1,
+    "price_level": 0,
+}
+SHORT_TEMPLATE_EXACT_FEATURES = {
+    "ksft2",
+    "kup2",
+    "klow",
+    "klow2",
+    "kmid2",
+    "kup",
+    "close_price_zscore_20",
+    "close_price_ratio_20",
+    "close_price_zscore_60",
+    "close_price_ratio_60",
+    "bid_gap_near_far_ratio",
+    "ask_gap_near_far_ratio",
+    "close_price_ratio_180",
+    "ask_gap_4_5",
+    "sell_vwap_trend_180",
+    "sell_vwap_trend_360",
+    "close_price_ratio_360",
+    "close_price_zscore_180",
+    "log_return_wap_2_vol_60",
+    "sell_vwap",
+    "weighted_imbalance_inv",
+    "close_price_zscore_360",
+    "price_spread",
+    "volume_ratio_60",
+    "klen_ratio_360",
+    "volume_ratio_180",
+    "turnover_delta_vol_180",
+}
+
+MID_TEMPLATE_CATEGORY_MINIMUMS = {
+    "kline_core": 2,
+    "kline_aux": 1,
+    "trend": 1,
+    "distribution": 1,
+    "stability": 1,
+    "order_flow": 1,
+    "shape": 2,
+    "trade_activity": 2,
+    "price_level": 1,
+}
+MID_TEMPLATE_CATEGORY_MAXIMUMS = {
+    "kline_core": 5,
+    "kline_aux": 2,
+    "spread": 1,
+    "trend": 3,
+    "distribution": 2,
+    "momentum": 0,
+    "stability": 2,
+    "order_flow": 2,
+    "shape": 4,
+    "trade_activity": 4,
+    "price_level": 2,
+}
+
+MID_TEMPLATE_EXACT_FEATURES = {
+    "ksft2",
+    "klow",
+    "log_return_wap_2_vol_180",
+    "close_price_ratio_20",
+    "kup2",
+    "close_price_zscore_20",
+    "kmid2",
+    "turnover_delta_vol_180",
+    "close_price_ratio_180",
+    "close_price_ratio_60",
+    "klen",
+    "close_price_ratio_360",
+    "wap_1",
+    "turnover_delta_vol_60",
+    "klen_ratio_360",
+    "ask_gap_near_far_ratio",
+    "volume_ratio_60",
+    "volume_trend_60",
+    "bid_gap_near_far_ratio",
+    "ask_gap_2_3",
+    "vol_regime_ratio_60_360",
+    "ofi_vol_360",
+    "sell_vwap_trend_180",
+    "close_price_zscore_60",
+    "turnover_regime_ratio_60_360",
+    "buy_volume",
+    "volume",
+    "kup",
+    "volume_ratio_180",
+}
+
+LONG_TEMPLATE_CATEGORY_MINIMUMS = {
+    "kline_core": 2,
+    "kline_aux": 1,
+    "spread": 1,
+    "trend": 1,
+    "distribution": 1,
+    "stability": 1,
+    "order_flow": 1,
+    "shape": 2,
+    "trade_activity": 2,
+    "price_level": 1,
+}
+LONG_TEMPLATE_CATEGORY_MAXIMUMS = {
+    "kline_core": 4,
+    "kline_aux": 1,
+    "spread": 1,
+    "trend": 3,
+    "distribution": 1,
+    "momentum": 0,
+    "stability": 2,
+    "order_flow": 2,
+    "shape": 4,
+    "trade_activity": 4,
+    "price_level": 1,
+}
+LONG_TEMPLATE_EXACT_FEATURES = {
+    "log_return_wap_2_vol_60",
+    "ask_gap_count",
+    "wap_2",
+    "klen",
+    "close_price_ratio_180",
+    "turnover_delta_vol_180",
+    "close_price_ratio_60",
+    "klow",
+    "vol_regime_ratio_60_360",
+    "ksft2",
+    "volume",
+    "close_price_ratio_360",
+    "ofi_vol_360",
+    "turnover_delta_slope_180",
+    "max_ask_gap",
+    "klen_ratio_360",
+    "close_price_ratio_20",
+    "sell_volume",
+    "gap_count_diff",
+    "buy_volume",
+    "vol_regime_ratio_60_180",
+    "kup2",
+    "kmid2",
+    "ofi_vol_180",
+    "turnover_regime_ratio_60_360",
+    "close_price_zscore_20",
+    "sell_vwap_trend_180",
+    "sell_vwap_trend_360",
+    "volume_ratio_60",
+    "spread_regime_ratio_60_360",
+    "close_price_zscore_180",
+}
+
+HORIZON_TEMPLATE_CONFIG = {
+    5: {
+        "category_minimums": SHORT_TEMPLATE_CATEGORY_MINIMUMS,
+        "category_maximums": SHORT_TEMPLATE_CATEGORY_MAXIMUMS,
+        "exact_features": SHORT_TEMPLATE_EXACT_FEATURES,
+    },
+    30: {
+        "category_minimums": MID_TEMPLATE_CATEGORY_MINIMUMS,
+        "category_maximums": MID_TEMPLATE_CATEGORY_MAXIMUMS,
+        "exact_features": MID_TEMPLATE_EXACT_FEATURES,
+    },
+    70: {
+        "category_minimums": LONG_TEMPLATE_CATEGORY_MINIMUMS,
+        "category_maximums": LONG_TEMPLATE_CATEGORY_MAXIMUMS,
+        "exact_features": LONG_TEMPLATE_EXACT_FEATURES,
+    },
+}
+
 
 def _trend_to_zscore_name(feature: str) -> str | None:
     match = re.match(r"^(.+)_trend_(\d+)$", feature)
@@ -236,6 +429,146 @@ def matches_suffix(feature: str, prefix: str) -> bool:
 
 def is_trend_feature(feature: str) -> bool:
     return any(feature.endswith(f"_trend_{window}") for window in ROLLING_WINDOWS)
+
+
+def trailing_window(feature: str) -> int | None:
+    match = re.search(r"_(\d+)$", feature)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def template_config_for_horizon(primary_horizon: int) -> dict | None:
+    return HORIZON_TEMPLATE_CONFIG.get(primary_horizon)
+
+
+def template_anchor_features(primary_horizon: int) -> set[str]:
+    config = template_config_for_horizon(primary_horizon)
+    if not config:
+        return set()
+    return set(config.get("exact_features", set()))
+
+
+def horizon_template_bonus(feature: str, primary_horizon: int) -> int:
+    """
+    以各 horizon 的实测最优因子清单为模板，在对应 horizon 上给同类特征家族加轻量 bonus。
+    目标是保留 IC 主导，同时在相近 IC 下更偏向已验证有效的结构。
+    """
+    anchor_features = template_anchor_features(primary_horizon)
+    if not anchor_features:
+        return 0
+
+    score = 0
+    window = trailing_window(feature)
+
+    if feature in anchor_features:
+        score += 10
+
+    if primary_horizon == 5:
+        if feature in {"ksft2", "kup2", "klow2", "kmid2"}:
+            score += 4
+        if feature in {"klow", "kup"}:
+            score += 3
+        if feature.startswith("close_price_ratio_") and window in {20, 60, 180, 360}:
+            score += 4
+        if feature.startswith("close_price_zscore_") and window in {20, 60, 180, 360}:
+            score += 4
+        if feature in {"bid_gap_near_far_ratio", "ask_gap_near_far_ratio", "ask_gap_4_5"}:
+            score += 4
+        if feature in {"sell_vwap_trend_180", "sell_vwap_trend_360"}:
+            score += 4
+        if feature in {"log_return_wap_2_vol_60", "sell_vwap", "weighted_imbalance_inv"}:
+            score += 4
+        if feature in {"price_spread", "klen_ratio_360"}:
+            score += 3
+        if feature.startswith("volume_ratio_") and window in {60, 180}:
+            score += 3
+        if feature == "turnover_delta_vol_180":
+            score += 3
+
+    if primary_horizon == 30:
+        if feature in {"ksft2", "kup2", "kmid2", "klen"}:
+            score += 4
+        if feature in {"klow", "kup"}:
+            score += 3
+        if feature.startswith("close_price_ratio_") and window in {20, 60, 180, 360}:
+            score += 4
+        if feature.startswith("close_price_zscore_") and window in {20, 60}:
+            score += 4
+        if feature == "klen_ratio_360":
+            score += 3
+        if feature.startswith("volume_ratio_") and window in {60, 180}:
+            score += 3
+        if feature.startswith("turnover_delta_vol_") and window in {60, 180}:
+            score += 4
+        if feature == "log_return_wap_2_vol_180":
+            score += 4
+        if feature in {"bid_gap_near_far_ratio", "ask_gap_near_far_ratio", "ask_gap_2_3"}:
+            score += 4
+        if feature in {"vol_regime_ratio_60_360", "turnover_regime_ratio_60_360"}:
+            score += 4
+        if feature == "ofi_vol_360":
+            score += 4
+        if feature in {"volume_trend_60", "sell_vwap_trend_180"}:
+            score += 4
+        if feature == "wap_1":
+            score += 3
+        if feature in {"buy_volume", "volume"}:
+            score += 3
+        if feature in {
+            "price_spread",
+            "sell_vwap",
+            "weighted_imbalance_inv",
+            "close_price_zscore_180",
+            "close_price_zscore_360",
+            "sell_vwap_trend_360",
+            "wap_2",
+            "sell_volume",
+            "spread_regime_ratio_60_360",
+            "ofi_vol_180",
+        }:
+            score -= 3
+
+    if primary_horizon == 70:
+        if feature in {"klen", "ksft2", "kup2", "kmid2"}:
+            score += 4
+        if feature == "klow":
+            score += 3
+        if feature.startswith("close_price_ratio_") and window in {20, 60, 180, 360}:
+            score += 4
+        if feature.startswith("close_price_zscore_") and window in {20, 180}:
+            score += 3
+        if feature == "log_return_wap_2_vol_60":
+            score += 4
+        if feature in {"ask_gap_count", "max_ask_gap", "gap_count_diff"}:
+            score += 4
+        if feature in {"vol_regime_ratio_60_360", "vol_regime_ratio_60_180", "turnover_regime_ratio_60_360"}:
+            score += 4
+        if feature in {"ofi_vol_360", "ofi_vol_180"}:
+            score += 4
+        if feature in {"turnover_delta_vol_180", "turnover_delta_slope_180"}:
+            score += 4
+        if feature in {"sell_vwap_trend_180", "sell_vwap_trend_360"}:
+            score += 4
+        if feature in {"wap_2", "volume", "buy_volume", "sell_volume"}:
+            score += 3
+        if feature == "spread_regime_ratio_60_360":
+            score += 3
+        if feature == "volume_ratio_60":
+            score += 3
+
+    return score
+
+
+def selection_rank_score(feature: str, ic_value: float, primary_horizon: int) -> float:
+    return abs(float(ic_value)) + 0.0012 * horizon_template_bonus(feature, primary_horizon)
+
+
+def category_rules_for_horizon(primary_horizon: int) -> tuple[dict[str, int], dict[str, int]]:
+    config = template_config_for_horizon(primary_horizon)
+    if config:
+        return config["category_minimums"], config["category_maximums"]
+    return VP_VAE_CATEGORY_MINIMUMS, VP_VAE_CATEGORY_MAXIMUMS
 
 
 def feature_category(feature: str) -> str:
@@ -299,6 +632,14 @@ def feature_category(feature: str) -> str:
         return "stability"
     if feature.startswith("ofi"):
         return "order_flow"
+    if "gap_near_far_ratio" in feature:
+        return "shape"
+    if feature.startswith("buy_volume"):
+        return "distribution"
+    if feature.startswith("turnover_delta_vol_"):
+        return "trade_activity"
+    if feature.startswith("ofi_vol_"):
+        return "order_flow"
     if "slope" in feature or "convexity" in feature:
         return "shape"
     if "spread" in feature:
@@ -357,6 +698,13 @@ def feature_preference_score(feature: str) -> int:
                 "price_spread_vol",
             ]
         )
+    ):
+        score += 2
+    if (
+        feature.startswith("buy_volume_")
+        or "gap_near_far_ratio_" in feature
+        or feature.startswith("turnover_delta_vol_")
+        or feature.startswith("ofi_vol_")
     ):
         score += 2
     if (
@@ -526,6 +874,7 @@ def deduplicate_exact_corr_features(
     corr_rows: list[dict],
     ic_lookup: dict[str, float],
     exact_corr_threshold: float,
+    primary_horizon: int,
 ) -> tuple[list[str], list[dict]]:
     """
     对接近完全重复（|corr| >= threshold）特征做组件级去重。
@@ -574,7 +923,7 @@ def deduplicate_exact_corr_features(
         ranked = sorted(
             component,
             key=lambda f: (
-                -abs(float(ic_lookup.get(f, 0.0))),
+                -selection_rank_score(f, float(ic_lookup.get(f, 0.0)), primary_horizon),
                 -manual_duplicate_preference(f, comp_set),
                 -feature_preference_score(f),
                 len(f),
@@ -619,7 +968,14 @@ def greedy_select_features(
         if np.isfinite(corr):
             ic_scores[feature] = float(corr)
 
-    ranked = sorted(ic_scores.items(), key=lambda item: abs(item[1]), reverse=True)
+    ranked = sorted(
+        ic_scores.items(),
+        key=lambda item: (
+            selection_rank_score(item[0], item[1], primary_horizon),
+            feature_preference_score(item[0]),
+        ),
+        reverse=True,
+    )
     selected: list[str] = []
     rows: list[dict] = []
 
@@ -666,6 +1022,7 @@ def build_vp_vae_recommendation(
     category_minimums: dict[str, int],
     category_maximums: dict[str, int],
     target_count: int | None,
+    primary_horizon: int,
 ) -> list[dict]:
     blocked_pairs = {
         tuple(sorted((str(row["feature_a"]), str(row["feature_b"])))): float(row["abs_corr"])
@@ -674,7 +1031,10 @@ def build_vp_vae_recommendation(
 
     ranked = sorted(
         keep_rows,
-        key=lambda row: (row["abs_ic"], feature_preference_score(str(row["feature"]))),
+        key=lambda row: (
+            selection_rank_score(str(row["feature"]), float(row["ic"]), primary_horizon),
+            feature_preference_score(str(row["feature"])),
+        ),
         reverse=True,
     )
 
@@ -759,7 +1119,7 @@ def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
 
 
 def write_feature_list_txt(path: Path, rows: list[dict]) -> None:
-    selected = [str(row["feature"]) for row in rows if row["status"] == "keep"]
+    selected = sorted(str(row["feature"]) for row in rows if row["status"] == "keep")
     path.write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
 
 
@@ -770,7 +1130,10 @@ def write_feature_list_md(
     target_count: int | None,
     title: str = "VP-VAE Recommended Feature List",
 ) -> None:
-    selected = [row for row in rows if row["status"] == "keep"]
+    selected = sorted(
+        (row for row in rows if row["status"] == "keep"),
+        key=lambda row: str(row["feature"]),
+    )
     selection_line = (
         f"- Guarantee category coverage first, then fill to fixed target count `{target_count}`"
         if target_count is not None and target_count > 0
@@ -851,10 +1214,12 @@ def build_summary(
     dedup_rows_by_horizon: dict[int, list[dict]] | None = None,
     horizon_feature_rows: dict[int, list[dict]] | None = None,
 ) -> str:
+    active_template_horizons = sorted(HORIZON_TEMPLATE_CONFIG.keys())
     lines = [
         f"input: {input_path}",
         f"rows: {row_count}",
         f"feature_count: {len(feature_cols)}",
+        f"active_template_horizons: {','.join(str(h) for h in active_template_horizons) if active_template_horizons else 'none'}",
         "",
         "lowest_std_features:",
     ]
@@ -961,11 +1326,13 @@ def main() -> int:
     dedup_rows_by_horizon: dict[int, list[dict]] = {}
     dedup_feature_pool_by_horizon: dict[int, list[str]] = {}
     for horizon in horizons:
+        category_minimums, category_maximums = category_rules_for_horizon(horizon)
         dedup_feature_pool_by_horizon[horizon], dedup_rows_by_horizon[horizon] = deduplicate_exact_corr_features(
             feature_cols,
             corr_rows,
             ic_lookup_by_horizon.get(horizon, {}),
             args.exact_dedup_threshold,
+            primary_horizon=horizon,
         )
         shortlist_rows_by_horizon[horizon] = greedy_select_features(
             df,
@@ -978,9 +1345,10 @@ def main() -> int:
         vp_vae_rows_by_horizon[horizon] = build_vp_vae_recommendation(
             keep_rows_by_horizon[horizon],
             corr_rows,
-            category_minimums=VP_VAE_CATEGORY_MINIMUMS,
-            category_maximums=VP_VAE_CATEGORY_MAXIMUMS,
+            category_minimums=category_minimums,
+            category_maximums=category_maximums,
             target_count=(args.target_count if args.target_count > 0 else None),
+            primary_horizon=horizon,
         )
 
     shortlist_rows = shortlist_rows_by_horizon[args.primary_horizon]
