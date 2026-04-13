@@ -209,15 +209,15 @@ class FeatureValidator:
             # 趋势因子前N行有空值是正常的（滚动窗口）
             trend_cols = [col for col in columns_with_nulls if 'trend' in col['列名']]
             if trend_cols:
-                logger.info("注意: 趋势因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+                logger.info("注意: 趋势因子前若干行空值是正常的（滚动窗口大小为 60/180/360/720）")
 
             stability_vol_cols = [col for col in columns_with_nulls if 'log_return_wap_1_vol_' in col['列名']]
             if stability_vol_cols:
-                logger.info("注意: 滚动波动率因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+                logger.info("注意: 滚动波动率因子前若干行空值是正常的（滚动窗口大小为 60/180/360/720）")
 
             ofi_roll_cols = [col for col in columns_with_nulls if col['列名'].startswith('ofi_')]
             if ofi_roll_cols:
-                logger.info("注意: OFI 滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+                logger.info("注意: OFI 滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360/720）")
 
             trade_roll_cols = [
                 col for col in columns_with_nulls
@@ -229,7 +229,7 @@ class FeatureValidator:
                 )
             ]
             if trade_roll_cols:
-                logger.info("注意: 基于成交/持仓快照的滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360）")
+                logger.info("注意: 基于成交/持仓快照的滚动因子前若干行空值是正常的（滚动窗口大小为 60/180/360/720）")
 
         self.validation_results['null_values'] = result
         return result
@@ -283,7 +283,7 @@ class FeatureValidator:
         strictly_positive_columns.update({f"bid{i}_price" for i in range(1, 6)})
         strictly_positive_columns.update({f"ask{i}_price" for i in range(1, 6)})
 
-        rolling_windows = [60, 180, 360]
+        rolling_windows = [60, 180, 360, 720]
         strictly_non_negative_columns = {
             "buy_spread", "sell_spread", "wap_balance",
             *[f"log_return_wap_1_vol_{window}" for window in rolling_windows],

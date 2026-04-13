@@ -10,8 +10,8 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-ROLLING_WINDOWS = [60, 180, 360]
-RELATIVE_WINDOWS = [20, 60, 180, 360]
+ROLLING_WINDOWS = [60, 180, 360, 720]
+RELATIVE_WINDOWS = [30, 60, 180, 360, 720]
 
 
 def _group_keys(df: pl.DataFrame) -> list[str]:
@@ -1426,4 +1426,3 @@ def get_feature_columns() -> List[str]:
         "gap_to_spread_ratio",
         "imbalance_to_depth_ratio",
     ]
-

@@ -22,8 +22,8 @@ from typing import Iterable
 import numpy as np
 import polars as pl
 
-ROLLING_WINDOWS = [60, 180, 360]
-RELATIVE_WINDOWS = [20, 60, 180, 360]
+ROLLING_WINDOWS = [60, 180, 360, 720]
+RELATIVE_WINDOWS = [30, 60, 180, 360, 720]
 TREND_BASE_COLUMNS = [
     "ask1_price", "bid1_price",
     "buy_spread", "sell_spread",
