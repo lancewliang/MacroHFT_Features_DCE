@@ -16,14 +16,17 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import sys
 from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import polars as pl
 
-ROLLING_WINDOWS = [60, 180, 360, 720]
-RELATIVE_WINDOWS = [30, 60, 180, 360, 720]
+# 从 feature_calculator 统一导入窗口配置，避免两处维护
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "gen"))
+from feature_calculator import ROLLING_WINDOWS, RELATIVE_WINDOWS  # noqa: E402
+
 TREND_BASE_COLUMNS = [
     "ask1_price", "bid1_price",
     "buy_spread", "sell_spread",

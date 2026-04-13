@@ -21,6 +21,7 @@ from config import (
     LOG_FILE,
     LOG_DIR,
     TIMEFRAME,
+    ORDERBOOK_REQUIRED_COLUMNS,
     get_output_filepath,
     ensure_directories
 )
@@ -29,6 +30,60 @@ from data_loader import (
     generate_date_range
 )
 from feature_calculator import calculate_all_features, get_feature_columns
+
+
+def log_pre_drop_data_quality(df: pl.DataFrame, logger: logging.Logger, top_k: int = 20) -> None:
+    """
+    输出 drop 前的数据质量诊断，帮助定位哪些列在触发大量删行。
+    """
+    total_rows = len(df)
+    if total_rows == 0:
+        logger.warning("预清洗诊断: 数据为空，跳过质量分析")
+        return
+
+    # 1) null 统计
+    null_dict = df.null_count().to_dicts()[0]
+    null_items = sorted(
+        [(col, int(cnt)) for col, cnt in null_dict.items() if int(cnt) > 0],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    if null_items:
+        logger.warning(f"预清洗诊断: 共有 {len(null_items)} 列存在 null")
+        logger.warning(f"预清洗诊断: null Top{min(top_k, len(null_items))} 列:")
+        for col, cnt in null_items[:top_k]:
+            logger.warning(f"  - {col}: {cnt} ({cnt / total_rows:.2%})")
+    else:
+        logger.info("预清洗诊断: 未发现 null 列")
+
+    # 2) NaN 统计（仅浮点列）
+    float_cols = [c for c in df.columns if df[c].dtype in (pl.Float32, pl.Float64)]
+    nan_items = []
+    if float_cols:
+        nan_counts = df.select([pl.col(c).is_nan().sum().alias(c) for c in float_cols]).to_dicts()[0]
+        nan_items = sorted(
+            [(col, int(cnt)) for col, cnt in nan_counts.items() if int(cnt) > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+    if nan_items:
+        logger.warning(f"预清洗诊断: 共有 {len(nan_items)} 列存在 NaN")
+        logger.warning(f"预清洗诊断: NaN Top{min(top_k, len(nan_items))} 列:")
+        for col, cnt in nan_items[:top_k]:
+            logger.warning(f"  - {col}: {cnt} ({cnt / total_rows:.2%})")
+    else:
+        logger.info("预清洗诊断: 未发现 NaN 列")
+
+    # 3) 行级影响（与主流程 drop_nulls 行为一致）
+    has_null_rows = df.select(pl.any_horizontal([pl.col(c).is_null() for c in df.columns]).sum()).item()
+    logger.info(f"预清洗诊断: 包含至少一个 null 的行数 = {has_null_rows} ({has_null_rows / total_rows:.2%})")
+
+    if float_cols:
+        has_nan_rows = df.select(pl.any_horizontal([pl.col(c).is_nan() for c in float_cols]).sum()).item()
+        logger.info(f"预清洗诊断: 包含至少一个 NaN 的行数 = {has_nan_rows} ({has_nan_rows / total_rows:.2%})")
+
+ 
 
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
@@ -121,12 +176,18 @@ def generate_features_single_file(
 
     features_df = calculate_all_features(all_raw_df)
 
-    # 统一删除因滚动窗口产生的 NaN 行
+    # 输出 drop 前质量诊断，便于定位删行来源
+    log_pre_drop_data_quality(features_df, logger)
+ 
     rows_before = len(features_df)
-    final_df = features_df.drop_nulls()
+    critical_columns = [
+        col for col in (["timestamp", "date", "contract"] + ORDERBOOK_REQUIRED_COLUMNS)
+        if col in features_df.columns
+    ]
+    final_df = features_df.drop_nulls(subset=critical_columns)
     rows_after = len(final_df)
     if rows_before > rows_after:
-        logger.info(f"删除了 {rows_before - rows_after} 行包含 NaN 的数据（滚动窗口预热期）")
+        logger.info(f"删除了 {rows_before - rows_after} 行关键字段为空的数据")
 
     # 保存最终结果
     output_path = get_output_filepath(start_date=start_date, end_date=end_date, timeframe=timeframe)

@@ -10,25 +10,36 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-ROLLING_WINDOWS = [60, 180, 360, 720]
-RELATIVE_WINDOWS = [30, 60, 180, 360, 720]
+ROLLING_WINDOWS = [30, 60, 120, 240, 480]
+RELATIVE_WINDOWS = [30, 60, 120, 240, 480]
 
 
 def _group_keys(df: pl.DataFrame) -> list[str]:
-    """返回适合做快照差分的分组键。"""
+    """返回适合做日内快照差分的分组键（date+contract）。"""
     return [key for key in ("date", "contract") if key in df.columns]
 
 
+def _contract_keys(df: pl.DataFrame) -> list[str]:
+    """返回跨日滚动计算的分组键（仅 contract），允许跨日连续回看。"""
+    return [key for key in ("contract",) if key in df.columns]
+
+
 def _shift_within_groups(expr: pl.Expr, periods: int, group_keys: list[str]) -> pl.Expr:
-    """在日内分组内做 shift，避免累计快照跨日串联。"""
+    """在日内分组内做 shift，避免累计快照跨日串联（用于 delta 类因子）。"""
     if group_keys:
         return expr.shift(periods).over(group_keys)
     return expr.shift(periods)
 
 
-def _endpoint_slope_expr(column: str, window: int, group_keys: list[str]) -> pl.Expr:
-    """用窗口首尾差近似每步斜率。"""
-    prev_value = _shift_within_groups(pl.col(column), window, group_keys)
+def _endpoint_slope_expr(column: str, window: int, contract_keys: list[str]) -> pl.Expr:
+    """
+    用窗口首尾差近似每步斜率，按合约分组跨日连续计算。
+    不按 date 分组，避免每天前 window 行全为 null。
+    """
+    if contract_keys:
+        prev_value = pl.col(column).shift(window).over(contract_keys)
+    else:
+        prev_value = pl.col(column).shift(window)
     return ((pl.col(column) - prev_value) / float(window)).alias(f"{column}_slope_{window}")
 
 
@@ -917,8 +928,8 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
     - open_interest_slope_{w}
     """
     logger.info(f"开始计算成交与持仓滚动因子 (windows={windows})")
-
-    group_keys = _group_keys(df)
+ 
+    contract_keys = _contract_keys(df)
     trade_direction = (
         pl.when(pl.col("avg_trade_price_bias") > 0)
         .then(1.0)
@@ -968,16 +979,16 @@ def calculate_trade_rolling_features(df: pl.DataFrame, windows: list[int] = ROLL
             (trade_direction * trade_volume_delta_zscore).alias(f"signed_trade_pressure_{window}"),
             (trade_direction * open_interest_change_zscore).alias(f"signed_open_interest_pressure_{window}"),
             (avg_trade_price_bias_zscore * pl.col(f"ofi_zscore_{window}")).alias(f"trade_ofi_resonance_{window}"),
-            _endpoint_slope_expr("trade_volume_delta", window, group_keys),
-            _endpoint_slope_expr("turnover_delta", window, group_keys),
-            _endpoint_slope_expr("avg_trade_price_bias", window, group_keys),
-            _endpoint_slope_expr("open_interest", window, group_keys),
+            _endpoint_slope_expr("trade_volume_delta", window, contract_keys),
+            _endpoint_slope_expr("turnover_delta", window, contract_keys),
+            _endpoint_slope_expr("avg_trade_price_bias", window, contract_keys),
+            _endpoint_slope_expr("open_interest", window, contract_keys),
         ])
 
     df = df.with_columns(exprs)
 
     logger.info("成交与持仓滚动因子计算完成")
-    logger.warning(f"注意：前 {max(windows)} 行的成交/持仓滚动因子可能为 null（滚动窗口不足）")
+    logger.info(f"注意：slope 因子按合约跨日连续计算，每个合约前 {max(windows)} 行可能为 null（数据集开头预热期）")
     return df
 
 
