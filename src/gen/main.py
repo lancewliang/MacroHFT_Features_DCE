@@ -87,8 +87,8 @@ def generate_features_single_file(
 
     logger.info(f"总共需要处理 {total_days} 天，批大小 {batch_size} 天")
 
-    # 分批处理
-    batch_dfs = []
+    # 分批加载原始数据
+    raw_dfs = []
     for i in range(0, total_days, batch_size):
         batch_num = i // batch_size + 1
         total_batches = (total_days + batch_size - 1) // batch_size
@@ -97,42 +97,36 @@ def generate_features_single_file(
         batch_end_idx = min(i + batch_size, total_days)
         batch_end = all_dates[batch_end_idx - 1]
 
-        logger.info(f"\n处理批次 {batch_num}/{total_batches}: {batch_start} 至 {batch_end}")
+        logger.info(f"\n加载批次 {batch_num}/{total_batches}: {batch_start} 至 {batch_end}")
 
-        # 加载和处理数据
         try:
-            # 使用新的加载和合并函数
             merged_df = load_and_merge_date_range(batch_start, batch_end, timeframe=timeframe)
-
             if merged_df is None:
                 logger.warning(f"批次 {batch_num} 数据加载失败，跳过")
                 continue
-
-            features_df = calculate_all_features(merged_df)
-          
-           
-            # 删除包含 nan 值的行（由周期性因子导致）
-            rows_before = len(features_df)
-            features_df = features_df.drop_nulls()
-            rows_after = len(features_df)
-            if rows_before > rows_after:
-                logger.info(f"批次 {batch_num} 删除了 {rows_before - rows_after} 行包含 NaN 的数据")
-
-            batch_dfs.append(features_df)
-
-            logger.info(f"批次 {batch_num} 处理完成，{len(features_df)} 行")
-
+            raw_dfs.append(merged_df)
+            logger.info(f"批次 {batch_num} 加载完成，{len(merged_df)} 行")
         except Exception as e:
-            logger.error(f"批次 {batch_num} 处理失败: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"批次 {batch_num} 加载失败: {str(e)}\n{traceback.format_exc()}")
             continue
 
-    # 合并所有批次
-    if not batch_dfs:
-        logger.error("没有成功处理的批次")
+    if not raw_dfs:
+        logger.error("没有成功加载的数据")
         return False
 
-    logger.info(f"\n合并 {len(batch_dfs)} 个批次的数据")
-    final_df = pl.concat(batch_dfs)
+    # 合并所有原始数据，再统一计算因子
+    logger.info(f"\n合并 {len(raw_dfs)} 个批次的原始数据")
+    all_raw_df = pl.concat(raw_dfs)
+    logger.info(f"合并后共 {len(all_raw_df)} 行，开始计算因子")
+
+    features_df = calculate_all_features(all_raw_df)
+
+    # 统一删除因滚动窗口产生的 NaN 行
+    rows_before = len(features_df)
+    final_df = features_df.drop_nulls()
+    rows_after = len(final_df)
+    if rows_before > rows_after:
+        logger.info(f"删除了 {rows_before - rows_after} 行包含 NaN 的数据（滚动窗口预热期）")
 
     # 保存最终结果
     output_path = get_output_filepath(start_date=start_date, end_date=end_date, timeframe=timeframe)
