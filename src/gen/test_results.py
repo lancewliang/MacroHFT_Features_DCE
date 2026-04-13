@@ -275,20 +275,51 @@ class FeatureValidator:
             else:
                 logger.info("volume_imbalance 范围检查通过 ✓")
 
-        # 检查价格是否为正（排除对数收益率和趋势因子，因为它们可以为负）
-        price_columns = [col for col in self.df.columns
-                        if 'price' in col.lower()
-                        and 'log_return' not in col.lower()
-                        and 'trend' not in col.lower()]
-        for col in price_columns:
-            negative_count = self.df.filter(pl.col(col) <= 0).shape[0]
-            if negative_count > 0:
+        # 仅对“应当恒正/恒非负”的价格相关列做约束，避免把可正可负的衍生因子误判为异常
+        strictly_positive_columns = {
+            "open_price", "high_price", "low_price", "close_price",
+            "wap_1", "wap_2", "buy_vwap", "sell_vwap", "avg_trade_price",
+        }
+        strictly_positive_columns.update({f"bid{i}_price" for i in range(1, 6)})
+        strictly_positive_columns.update({f"ask{i}_price" for i in range(1, 6)})
+
+        rolling_windows = [60, 180, 360]
+        strictly_non_negative_columns = {
+            "buy_spread", "sell_spread", "wap_balance",
+            *[f"log_return_wap_1_vol_{window}" for window in rolling_windows],
+            *[f"log_return_wap_2_vol_{window}" for window in rolling_windows],
+            *[f"log_return_bid1_price_vol_{window}" for window in rolling_windows],
+            *[f"price_spread_vol_{window}" for window in rolling_windows],
+            *[f"ofi_vol_{window}" for window in rolling_windows],
+            *[f"trade_volume_delta_vol_{window}" for window in rolling_windows],
+            *[f"turnover_delta_vol_{window}" for window in rolling_windows],
+            *[f"avg_trade_price_bias_vol_{window}" for window in rolling_windows],
+            *[f"open_interest_change_vol_{window}" for window in rolling_windows],
+        }
+
+        for col in strictly_positive_columns:
+            if col not in self.df.columns:
+                continue
+            non_positive_count = self.df.filter(pl.col(col) <= 0).shape[0]
+            if non_positive_count > 0:
                 issues.append({
                     "问题": f"{col} 存在非正值",
+                    "影响行数": non_positive_count,
+                    "比例": f"{non_positive_count/len(self.df)*100:.2f}%"
+                })
+                logger.error(f"{col} 存在 {non_positive_count} 个非正值 ✗")
+
+        for col in strictly_non_negative_columns:
+            if col not in self.df.columns:
+                continue
+            negative_count = self.df.filter(pl.col(col) < 0).shape[0]
+            if negative_count > 0:
+                issues.append({
+                    "问题": f"{col} 存在负值",
                     "影响行数": negative_count,
                     "比例": f"{negative_count/len(self.df)*100:.2f}%"
                 })
-                logger.error(f"{col} 存在 {negative_count} 个非正值 ✗")
+                logger.error(f"{col} 存在 {negative_count} 个负值 ✗")
 
         # 检查无穷值
         inf_count = 0
