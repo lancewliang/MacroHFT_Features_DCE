@@ -10,8 +10,8 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-ROLLING_WINDOWS = [30, 60, 120, 240, 480]
-RELATIVE_WINDOWS = [30, 60, 120, 240, 480]
+ROLLING_WINDOWS = [30, 60, 120, 240]
+RELATIVE_WINDOWS = [30, 60, 120, 240]
 
 
 def _group_keys(df: pl.DataFrame) -> list[str]:
