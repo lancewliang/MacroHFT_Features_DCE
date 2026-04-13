@@ -17,18 +17,15 @@ from config import (
     END_DATE,
     BATCH_SIZE_DAYS,
     OUTPUT_FORMAT,
-    OUTPUT_STRATEGY,
     LOG_LEVEL,
     LOG_FILE,
     LOG_DIR,
     TIMEFRAME,
-    ENABLE_DATA_VALIDATION,
     get_output_filepath,
     ensure_directories
 )
 from data_loader import (
     load_and_merge_date_range,
-    validate_data,
     generate_date_range
 )
 from feature_calculator import calculate_all_features, get_feature_columns
@@ -160,9 +157,9 @@ def main():
                         help=f'起始日期 (默认: {START_DATE})')
     parser.add_argument('--end-date', type=str, default=END_DATE,
                         help=f'结束日期 (默认: {END_DATE})')
-    parser.add_argument('--strategy', type=str, default=OUTPUT_STRATEGY,
+    parser.add_argument('--strategy', type=str, default='single',
                         choices=['single'],
-                        help=f'输出策略 (默认: {OUTPUT_STRATEGY})')
+                        help='输出策略')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE_DAYS,
                         help=f'批处理大小（天数） (默认: {BATCH_SIZE_DAYS})')
     parser.add_argument('--timeframe', type=str, default=TIMEFRAME,

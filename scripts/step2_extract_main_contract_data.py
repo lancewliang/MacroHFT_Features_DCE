@@ -5,17 +5,15 @@
 功能：
 1. 扫描 data/原始下载/{品种} 目录下的所有数据文件
 2. 根据配置的主力月份和成交量识别每天的主力合约
-3. 将主力合约数据复制到新目录结构：data/{品种}/{年}/{文件类型}/{合约}-{年}-{月}-{日期}.csv
+3. 将主力合约数据复制到新目录结构：data/{品种}/{年}/{合约}-{年}-{月}-{日期}.csv
 
 新目录结构示例：
-  data/豆粕/2023/期货成交量统计/m2305-2023-01-03.csv
-  data/豆粕/2023/五档行情数据/m2305-2023-01-03.csv
-  data/豆粕/2023/十笔最优价位委托/m2305-2023-01-03.csv
+  data/铝/2023/al2305-2023-01-03.csv
 
 使用方法：
-  python scripts/step2_extract_main_contract_data.py --commodity 豆粕
-  python scripts/step2_extract_main_contract_data.py --commodity 豆粕 --year 2023
-  python scripts/step2_extract_main_contract_data.py --commodity 豆粕 --year 2023 --month 01
+  python scripts/step2_extract_main_contract_data.py
+  python scripts/step2_extract_main_contract_data.py --year 2023
+  python scripts/step2_extract_main_contract_data.py --year 2023 --month 01
 """
 
 import polars as pl
@@ -334,15 +332,7 @@ def process_commodity(
 
 # ==================== 主函数 ====================
 def main():
-    parser = argparse.ArgumentParser(description="提取主力合约数据")
-    parser.add_argument(
-        "--commodity",
-        type=str,
-        default="铝",
-        # required=True,
-        choices=list(MAIN_CONTRACT_MONTHS.keys()),
-        help="品种名称"
-    )
+    parser = argparse.ArgumentParser(description="提取铝主力合约数据")
     parser.add_argument(
         "--year",
         type=str,
@@ -371,9 +361,9 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # 处理品种数据
+    # 处理铝品种数据
     process_commodity(
-        commodity=args.commodity,
+        commodity="铝",
         year=args.year,
         month=args.month,
         volume_threshold=args.threshold

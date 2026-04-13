@@ -398,6 +398,11 @@ HORIZON_TEMPLATE_CONFIG = {
 
 
 def _trend_to_zscore_name(feature: str) -> str | None:
+    """
+    将趋势因子名转换为对应的 zscore 因子名。
+    例如 'wap_1_trend_60' -> 'wap_1_zscore_60'
+    用于识别 trend/zscore 互为冗余的因子对。
+    """
     match = re.match(r"^(.+)_trend_(\d+)$", feature)
     if not match:
         return None
@@ -405,6 +410,10 @@ def _trend_to_zscore_name(feature: str) -> str | None:
 
 
 def parse_horizons(raw: str) -> list[int]:
+    """
+    解析逗号分隔的预测 horizon 字符串，返回正整数列表。
+    例如 '5,30,70' -> [5, 30, 70]
+    """
     horizons = []
     for part in raw.split(","):
         part = part.strip()
@@ -420,18 +429,24 @@ def parse_horizons(raw: str) -> list[int]:
 
 
 def available_feature_columns(df: pl.DataFrame, requested: Iterable[str]) -> list[str]:
+    """
+    从 requested 列表中筛选出 df 中实际存在的列，过滤掉数据集中缺失的因子。
+    """
     return [col for col in requested if col in df.columns]
 
 
 def matches_suffix(feature: str, prefix: str) -> bool:
+    """判断 feature 是否为 '{prefix}_{window}' 格式（window 取 ROLLING_WINDOWS 中的值）。"""
     return any(feature == f"{prefix}_{window}" for window in ROLLING_WINDOWS)
 
 
 def is_trend_feature(feature: str) -> bool:
+    """判断 feature 是否为趋势因子（以 '_trend_{window}' 结尾）。"""
     return any(feature.endswith(f"_trend_{window}") for window in ROLLING_WINDOWS)
 
 
 def trailing_window(feature: str) -> int | None:
+    """提取因子名末尾的滚动窗口数字，例如 'ofi_vol_180' -> 180，无则返回 None。"""
     match = re.search(r"_(\d+)$", feature)
     if not match:
         return None
@@ -439,10 +454,12 @@ def trailing_window(feature: str) -> int | None:
 
 
 def template_config_for_horizon(primary_horizon: int) -> dict | None:
+    """返回指定 horizon 对应的模板配置（类别上下限 + 锚定因子集），不存在则返回 None。"""
     return HORIZON_TEMPLATE_CONFIG.get(primary_horizon)
 
 
 def template_anchor_features(primary_horizon: int) -> set[str]:
+    """返回指定 horizon 模板中预设的锚定因子集合，用于 bonus 打分时优先保留已验证有效的因子。"""
     config = template_config_for_horizon(primary_horizon)
     if not config:
         return set()
@@ -561,10 +578,18 @@ def horizon_template_bonus(feature: str, primary_horizon: int) -> int:
 
 
 def selection_rank_score(feature: str, ic_value: float, primary_horizon: int) -> float:
+    """
+    综合排序分 = |IC| + 模板 bonus 的小权重加成。
+    IC 仍是主导，bonus 仅在 IC 相近时起 tie-break 作用。
+    """
     return abs(float(ic_value)) + 0.0012 * horizon_template_bonus(feature, primary_horizon)
 
 
 def category_rules_for_horizon(primary_horizon: int) -> tuple[dict[str, int], dict[str, int]]:
+    """
+    返回指定 horizon 的因子类别数量约束（最小值、最大值）。
+    有模板配置时使用模板，否则回退到 VP_VAE 默认约束。
+    """
     config = template_config_for_horizon(primary_horizon)
     if config:
         return config["category_minimums"], config["category_maximums"]
@@ -572,6 +597,23 @@ def category_rules_for_horizon(primary_horizon: int) -> tuple[dict[str, int], di
 
 
 def feature_category(feature: str) -> str:
+    """
+    将因子名映射到语义类别，用于最终推荐时的类别配额控制。
+
+    类别说明：
+    - kline_core:      K线核心形态比率因子（kmid2/kup2/klow2/ksft2/klen）
+    - kline_aux:       K线辅助绝对量因子（kmid/kup/klow/ksft）
+    - trade_activity:  成交量/成交额/持仓量及其衍生滚动因子
+    - shape:           盘口缺档、斜率、凸性等结构形态因子
+    - distribution:    买卖盘不平衡、队列集中度等分布因子
+    - stability:       价差稳定性、深度回补、滚动波动率等韧性因子
+    - order_flow:      OFI 及其滚动累积/标准化因子
+    - trend:           价格/量的滚动趋势因子
+    - spread:          买卖价差因子
+    - momentum:        对数收益率因子
+    - price_level:     WAP 等价格水平因子
+    - other:           未匹配到以上类别的因子
+    """
     if feature in {"ksft2", "kup2", "klow2", "kmid2", "klen"}:
         return "kline_core"
     if feature in {"ksft", "kup", "klow", "kmid"}:
@@ -656,6 +698,21 @@ def feature_category(feature: str) -> str:
 
 
 def feature_preference_score(feature: str) -> int:
+    """
+    人工偏好分，用于在 IC 相近时辅助 tie-break，不影响 IC 主导的排序。
+
+    打分逻辑（正分 = 偏好保留，负分 = 偏好丢弃）：
+    - 归一化/比率类因子（以 '2' 结尾）+2
+    - 趋势因子 +1，对数收益率 +1，变化量因子 +1
+    - 成交/持仓衍生因子族 +1
+    - 不平衡核心因子 +1
+    - 滚动 OFI/zscore/波动率等高信息密度因子 +2
+    - 缺档/斜率/凸性等盘口结构因子 +1
+    - 流动性韧性因子 +1
+    - K线核心比率因子（kmid2/kup2/klow2/ksft2）+5（最高优先级）
+    - 冗余的 imbalance_top5 -1（与 volume_imbalance 高度重叠）
+    - 纯价格水平因子（price_spread/wap_1/wap_2）-2（信息量低）
+    """
     score = 0
     if feature.endswith("2"):
         score += 2
@@ -746,6 +803,12 @@ def feature_preference_score(feature: str) -> int:
 
 
 def compute_future_returns(df: pl.DataFrame, price_col: str, horizons: list[int]) -> pl.DataFrame:
+    """
+    计算多个预测 horizon 的未来对数收益率，作为 IC 计算的目标变量。
+
+    对每个 horizon h，新增列 fwd_ret_h = log(price[t+h] / price[t])。
+    使用 shift(-h) 向前取值，末尾 h 行将产生 null。
+    """
     exprs = []
     for horizon in horizons:
         exprs.append(
@@ -755,10 +818,17 @@ def compute_future_returns(df: pl.DataFrame, price_col: str, horizons: list[int]
 
 
 def numeric_numpy(df: pl.DataFrame, columns: list[str]) -> np.ndarray:
+    """将 DataFrame 中指定列转换为 numpy 二维数组，供后续数值计算使用。"""
     return df.select(columns).to_numpy()
 
 
 def compute_std_report(df: pl.DataFrame, feature_cols: list[str]) -> list[dict]:
+    """
+    计算每个因子的标准差，按升序排列，用于识别近零方差的无效因子。
+
+    过滤掉含有 inf/nan 的行后再计算，避免异常值干扰标准差估计。
+    返回列表按 std 从小到大排序，std 越小说明因子越缺乏区分度。
+    """
     arr = numeric_numpy(df, feature_cols)
     mask = np.isfinite(arr).all(axis=1)
     arr = arr[mask]
@@ -772,18 +842,28 @@ def compute_std_report(df: pl.DataFrame, feature_cols: list[str]) -> list[dict]:
 def compute_high_corr_pairs(
     df: pl.DataFrame, feature_cols: list[str], corr_threshold: float, sample_size: int
 ) -> list[dict]:
+    """
+    计算所有因子对之间的 Pearson 相关系数，返回超过阈值的高相关对。
+
+    数据量超过 sample_size 时随机采样以控制计算开销（固定 seed=42 保证可复现）。
+    过滤掉含 inf/nan 的行后计算全量相关矩阵，仅保留上三角避免重复。
+    结果按 abs_corr 降序排列，便于快速定位最冗余的因子对。
+    """
     work_df = df
     if len(work_df) > sample_size:
+        # 数据量过大时随机采样，降低内存和计算压力
         work_df = work_df.sample(n=sample_size, seed=42)
 
     arr = numeric_numpy(work_df, feature_cols)
+    # 过滤含 inf/nan 的行，避免相关系数计算失真
     mask = np.isfinite(arr).all(axis=1)
     arr = arr[mask]
+    # 计算全量因子相关矩阵，rowvar=False 表示每列是一个变量
     corr = np.corrcoef(arr, rowvar=False)
 
     rows: list[dict] = []
     for i in range(len(feature_cols)):
-        for j in range(i + 1, len(feature_cols)):
+        for j in range(i + 1, len(feature_cols)):  # 只取上三角，避免 (a,b) 和 (b,a) 重复
             value = corr[i, j]
             if np.isfinite(value) and abs(value) >= corr_threshold:
                 rows.append(
@@ -799,15 +879,24 @@ def compute_high_corr_pairs(
 
 
 def compute_ic_table(df: pl.DataFrame, feature_cols: list[str], horizons: list[int]) -> list[dict]:
+    """
+    计算所有因子在各预测 horizon 上的 IC（信息系数，即 Pearson 相关系数）。
+
+    IC = corr(factor, future_return)，衡量因子对未来收益的线性预测能力。
+    drop_nulls() 去除末尾因 shift 产生的 null 行，保证计算有效。
+    结果按 (horizon, abs_ic) 降序排列，便于快速定位各 horizon 最优因子。
+    """
     rows: list[dict] = []
     for horizon in horizons:
         target_col = f"fwd_ret_{horizon}"
+        # 只保留当前 horizon 所需的列，并去除含 null 的行（shift 末尾产生）
         work_df = df.select(feature_cols + [target_col]).drop_nulls()
         arr = work_df.to_numpy()
-        x = arr[:, :-1]
-        y = arr[:, -1]
+        x = arr[:, :-1]   # 因子矩阵，shape=(n_samples, n_features)
+        y = arr[:, -1]    # 目标变量（未来收益），shape=(n_samples,)
 
         for idx, feature in enumerate(feature_cols):
+            # 计算单因子与目标变量的 Pearson 相关系数，取 [0,1] 位置即交叉项
             corr = np.corrcoef(x[:, idx], y)[0, 1]
             if np.isfinite(corr):
                 rows.append(
@@ -824,6 +913,12 @@ def compute_ic_table(df: pl.DataFrame, feature_cols: list[str], horizons: list[i
 
 
 def compute_primary_ic_rank(ic_rows: list[dict], primary_horizon: int) -> list[dict]:
+    """
+    从完整 IC 表中筛选出主 horizon 的结果，按 abs_ic 降序排名，并附加因子类别信息。
+
+    rank 从 1 开始，方便后续报告直接展示 Top-N 因子。
+    """
+    # 只保留主 horizon 的行
     rows = [row for row in ic_rows if int(row["horizon"]) == primary_horizon]
     rows = sorted(rows, key=lambda item: item["abs_ic"], reverse=True)
     ranked = []
@@ -842,6 +937,9 @@ def compute_primary_ic_rank(ic_rows: list[dict], primary_horizon: int) -> list[d
 
 
 def build_ic_lookup(ic_rows: list[dict]) -> dict[int, dict[str, float]]:
+    """
+    将 IC 表转换为二级字典 {horizon: {feature: ic_value}}，方便 O(1) 查询。
+    """
     lookup: dict[int, dict[str, float]] = {}
     for row in ic_rows:
         horizon = int(row["horizon"])
@@ -881,10 +979,16 @@ def deduplicate_exact_corr_features(
     每个重复组件仅保留一个代表特征：
     1) 主 horizon 的 |IC| 更高
     2) 人工偏好与一般偏好分更高
+
+    算法流程：
+    1. 构建邻接表：将超过阈值的因子对连边
+    2. DFS 找连通分量（每个分量即一组高度冗余的因子）
+    3. 对每个分量按综合得分排序，保留第一名，其余标记为 drop
     """
     feature_set = set(feature_cols)
     adjacency: dict[str, set[str]] = {}
     corr_lookup: dict[tuple[str, str], float] = {}
+    # 构建邻接表，只保留两端都在候选集中的边
     for row in corr_rows:
         abs_corr = float(row["abs_corr"])
         if abs_corr < exact_corr_threshold:
@@ -895,11 +999,13 @@ def deduplicate_exact_corr_features(
             continue
         adjacency.setdefault(a, set()).add(b)
         adjacency.setdefault(b, set()).add(a)
+        # 双向存储，方便后续查询任意方向的相关系数
         corr_lookup[(a, b)] = abs_corr
         corr_lookup[(b, a)] = abs_corr
 
     visited: set[str] = set()
     components: list[list[str]] = []
+    # DFS 遍历邻接表，找出所有连通分量（即高度冗余的因子组）
     for feature in feature_cols:
         if feature in visited or feature not in adjacency:
             continue
@@ -920,6 +1026,7 @@ def deduplicate_exact_corr_features(
     dropped: set[str] = set()
     for component in components:
         comp_set = set(component)
+        # 按综合得分降序排列：IC 主导，人工偏好和通用偏好辅助 tie-break，名称长度/字典序兜底
         ranked = sorted(
             component,
             key=lambda f: (
@@ -956,18 +1063,28 @@ def greedy_select_features(
     corr_threshold: float,
     max_features: int,
 ) -> list[dict]:
+    """
+    贪心去冗余因子选择：按综合排序分从高到低依次考察每个因子，
+    若与已选集合中任意因子的相关系数超过阈值则跳过，否则加入选集。
+
+    这是一种前向逐步选择（Forward Stepwise Selection），时间复杂度 O(n^2)，
+    适合因子数量在数百以内的场景。
+    """
     target_col = f"fwd_ret_{primary_horizon}"
+    # 只保留所需列并去除 null 行，保证 numpy 转换干净
     work_df = df.select(feature_cols + [target_col]).drop_nulls()
     arr = work_df.to_numpy()
-    x = arr[:, :-1]
-    y = arr[:, -1]
+    x = arr[:, :-1]   # 因子矩阵
+    y = arr[:, -1]    # 目标收益
 
+    # 计算每个因子的 IC，过滤掉 nan/inf
     ic_scores: dict[str, float] = {}
     for idx, feature in enumerate(feature_cols):
         corr = np.corrcoef(x[:, idx], y)[0, 1]
         if np.isfinite(corr):
             ic_scores[feature] = float(corr)
 
+    # 按综合排序分降序排列，IC 主导，偏好分辅助 tie-break
     ranked = sorted(
         ic_scores.items(),
         key=lambda item: (
@@ -985,9 +1102,11 @@ def greedy_select_features(
 
         keep = True
         reason = "selected"
+        # 一次性取出候选因子和已选因子的数据，避免重复 select
         candidate = work_df.select([feature] + selected).to_numpy()
-        feat_vec = candidate[:, 0]
+        feat_vec = candidate[:, 0]  # 当前候选因子的数据列
 
+        # 检查候选因子与每个已选因子的相关性，超阈值则拒绝
         for idx, chosen in enumerate(selected, start=1):
             chosen_vec = candidate[:, idx]
             corr = np.corrcoef(feat_vec, chosen_vec)[0, 1]
@@ -1013,6 +1132,7 @@ def greedy_select_features(
 
 
 def build_keep_rows(shortlist_rows: list[dict]) -> list[dict]:
+    """从贪心选择结果中过滤出状态为 'keep' 的行，供后续推荐阶段使用。"""
     return [row for row in shortlist_rows if row["status"] == "keep"]
 
 
@@ -1024,11 +1144,24 @@ def build_vp_vae_recommendation(
     target_count: int | None,
     primary_horizon: int,
 ) -> list[dict]:
+    """
+    在贪心 shortlist 基础上，按类别配额约束生成最终推荐因子列表。
+
+    两阶段选择策略：
+    1. 优先满足各类别最低配额（category_minimums），保证结构多样性
+    2. 在配额满足后，按综合排序分继续填充直到达到 target_count 或类别上限
+
+    can_add 内部检查：
+    - 类别上限（category_maximums）：防止某一类因子过度集中
+    - 高相关拦截（blocked_pairs）：避免引入与已选因子高度冗余的因子
+    """
+    # 预构建高相关对集合，用于快速查询两个因子是否互相冗余
     blocked_pairs = {
         tuple(sorted((str(row["feature_a"]), str(row["feature_b"])))): float(row["abs_corr"])
         for row in corr_rows
     }
 
+    # 按综合排序分降序排列候选因子
     ranked = sorted(
         keep_rows,
         key=lambda row: (
@@ -1040,12 +1173,14 @@ def build_vp_vae_recommendation(
 
     selected: list[str] = []
     selected_set: set[str] = set()
+    # 初始化各类别计数器，合并 minimums 和 maximums 的所有类别键
     category_counts = {
         key: 0 for key in set(category_minimums) | set(category_maximums)
     }
     decision_reason: dict[str, str] = {}
 
     def can_add(feature: str, category: str) -> tuple[bool, str]:
+        """检查因子是否可以加入选集（类别上限 + 高相关拦截）。"""
         if category in category_maximums and category_counts[category] >= category_maximums[category]:
             return False, "category_cap_reached"
         for chosen in selected:
@@ -1054,12 +1189,13 @@ def build_vp_vae_recommendation(
                 return False, f"high_corr_with:{chosen}"
         return True, "selected"
 
+    # 第一阶段：优先满足各类别最低配额
     for category, minimum in category_minimums.items():
         if minimum <= 0:
             continue
         for row in ranked:
             if category_counts[category] >= minimum:
-                break
+                break  # 当前类别已满足最低配额，跳到下一类别
             feature = str(row["feature"])
             if feature in selected_set or feature_category(feature) != category:
                 continue
@@ -1072,6 +1208,7 @@ def build_vp_vae_recommendation(
             else:
                 decision_reason.setdefault(feature, reason)
 
+    # 第二阶段：按排序分继续填充，直到达到 target_count 或所有类别触及上限
     for row in ranked:
         if target_count is not None and target_count > 0 and len(selected) >= target_count:
             break
@@ -1089,6 +1226,7 @@ def build_vp_vae_recommendation(
         else:
             decision_reason.setdefault(feature, reason)
 
+    # 构建输出行，为每个候选因子附上最终决策状态和原因
     rows: list[dict] = []
     for row in ranked:
         feature = str(row["feature"])
@@ -1111,6 +1249,7 @@ def build_vp_vae_recommendation(
 
 
 def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
+    """将 rows 写入 CSV 文件，自动创建父目录，使用 UTF-8 编码。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -1119,6 +1258,7 @@ def write_csv(path: Path, rows: list[dict], fieldnames: list[str]) -> None:
 
 
 def write_feature_list_txt(path: Path, rows: list[dict]) -> None:
+    """将推荐因子列表（status='keep'）按字母序写入纯文本文件，每行一个因子名。"""
     selected = sorted(str(row["feature"]) for row in rows if row["status"] == "keep")
     path.write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
 
@@ -1130,6 +1270,9 @@ def write_feature_list_md(
     target_count: int | None,
     title: str = "VP-VAE Recommended Feature List",
 ) -> None:
+    """
+    将推荐因子列表写成 Markdown 格式，包含选择逻辑说明、因子列表和每个因子的 IC/类别注释。
+    """
     selected = sorted(
         (row for row in rows if row["status"] == "keep"),
         key=lambda row: str(row["feature"]),
@@ -1178,6 +1321,13 @@ def write_strategy_alias_outputs(
     rows: list[dict],
     target_count: int | None,
 ) -> None:
+    """
+    为指定策略别名（short/mid/long）输出因子列表文件。
+
+    同时写出两套命名：
+    - vp_vae_{strategy_name}_feature_list.{txt,md}：VP-VAE 标准命名
+    - final_feature_list_{strategy_name}.{txt,md}：训练脚本友好命名
+    """
     alias_base = output_dir / f"vp_vae_{strategy_name}_feature_list"
     write_feature_list_txt(alias_base.with_suffix(".txt"), rows)
     write_feature_list_md(
@@ -1214,6 +1364,18 @@ def build_summary(
     dedup_rows_by_horizon: dict[int, list[dict]] | None = None,
     horizon_feature_rows: dict[int, list[dict]] | None = None,
 ) -> str:
+    """
+    生成人类可读的文本摘要，汇总整个验证流程的关键结果：
+    - 数据集基本信息
+    - 低方差因子 Top-10
+    - 高相关因子对 Top-15
+    - 各 horizon 的精确去重情况
+    - 各 horizon IC Top-10
+    - 主 horizon IC 排名
+    - 贪心 shortlist 结果
+    - VP-VAE 最终推荐列表
+    - 各 horizon 独立推荐列表（如有）
+    """
     active_template_horizons = sorted(HORIZON_TEMPLATE_CONFIG.keys())
     lines = [
         f"input: {input_path}",
@@ -1294,6 +1456,18 @@ def build_summary(
 
 
 def main() -> int:
+    """
+    主入口：解析命令行参数，依次执行因子有效性验证的完整流程，并将结果写入输出目录。
+
+    流程：
+    1. 读取 feather 数据集，筛选可用因子列
+    2. 计算多 horizon 未来收益
+    3. 计算因子标准差报告（识别近零方差因子）
+    4. 计算高相关因子对（识别冗余因子）
+    5. 计算各 horizon 的 IC 表
+    6. 对每个 horizon 独立执行精确去重 + 贪心选择 + VP-VAE 推荐
+    7. 输出 CSV、TXT、MD 报告及汇总摘要
+    """
     parser = argparse.ArgumentParser(description="Validate factor effectiveness and redundancy.")
     parser.add_argument("--input", type=Path, default=Path("output/train.feather"))
     parser.add_argument("--price-col", type=str, default="close_price")
@@ -1309,17 +1483,21 @@ def main() -> int:
 
     horizons = parse_horizons(args.horizons)
     df = pl.read_ipc(args.input)
+    # 只保留数据集中实际存在的因子列，过滤掉未生成的特征
     feature_cols = available_feature_columns(df, DEFAULT_FEATURE_COLUMNS)
     if not feature_cols:
         raise ValueError("no feature columns found in input file")
 
+    # 计算各 horizon 的未来对数收益，作为 IC 计算的目标变量
     df = compute_future_returns(df, args.price_col, horizons)
     std_rows = compute_std_report(df, feature_cols)
     corr_rows = compute_high_corr_pairs(df, feature_cols, args.corr_threshold, args.sample_size)
     ic_rows = compute_ic_table(df, feature_cols, horizons)
     ic_rank_rows = compute_primary_ic_rank(ic_rows, args.primary_horizon)
+    # 构建二级 IC 查询字典，供各 horizon 去重时快速获取 IC 值
     ic_lookup_by_horizon = build_ic_lookup(ic_rows)
 
+    # 对每个 horizon 独立执行：精确去重 -> 贪心选择 -> VP-VAE 推荐
     shortlist_rows_by_horizon: dict[int, list[dict]] = {}
     keep_rows_by_horizon: dict[int, list[dict]] = {}
     vp_vae_rows_by_horizon: dict[int, list[dict]] = {}
@@ -1327,6 +1505,7 @@ def main() -> int:
     dedup_feature_pool_by_horizon: dict[int, list[str]] = {}
     for horizon in horizons:
         category_minimums, category_maximums = category_rules_for_horizon(horizon)
+        # 精确去重：移除与其他因子近乎完全相关的冗余因子
         dedup_feature_pool_by_horizon[horizon], dedup_rows_by_horizon[horizon] = deduplicate_exact_corr_features(
             feature_cols,
             corr_rows,

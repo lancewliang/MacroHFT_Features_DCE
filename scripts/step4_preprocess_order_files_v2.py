@@ -3,7 +3,7 @@
 五档行情数据处理脚本（polars版本）
 功能：按30秒聚合期货挂单量数据，bidx_price bidx_size askx_price askx_size
 使用polars进行高性能数据处理
-data/豆粕/2023/五档行情数据
+data/铝/年份/五档行情数据
 
 #### 原始字段列表
 

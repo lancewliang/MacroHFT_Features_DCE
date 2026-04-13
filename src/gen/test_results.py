@@ -12,8 +12,8 @@ import sys
 from config import (
     FEATURES_OUTPUT_DIR,
     OUTPUT_FORMAT,
-    get_feature_columns
 )
+from feature_calculator import get_feature_columns
 
 
 # 配置日志

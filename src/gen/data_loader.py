@@ -13,16 +13,15 @@ try:
     # 尝试相对导入（当作为包导入时）
     from .config import (
         SHOW_PROGRESS,
-        DCE_BASE_PATH,
+        DATA_ROOT,
         COMMODITY,
         TIMEFRAME,
         ORDERBOOK_REQUIRED_COLUMNS,
     )
 except ImportError:
-    # 回退到绝对导入（当直接运行时）
     from config import (
         SHOW_PROGRESS,
-        DCE_BASE_PATH,
+        DATA_ROOT,
         COMMODITY,
         TIMEFRAME,
         ORDERBOOK_REQUIRED_COLUMNS,
@@ -56,7 +55,7 @@ def get_orderbook_filepath(date_str: str, contract: str, commodity: str = COMMOD
     if contract is None:
         raise ValueError("合约代码不能为None")
 
-    dir_path = DCE_BASE_PATH / commodity / year / "orderbook" / timeframe
+    dir_path = DATA_ROOT / commodity / year / "orderbook" / timeframe
     filename = f"{contract}-{date_str}_{timeframe}.csv"
     return dir_path / filename
 
@@ -79,7 +78,7 @@ def find_daily_contract(date_str: str, commodity: str = COMMODITY, timeframe: st
     except ValueError:
         return None
 
-    dir_path = DCE_BASE_PATH / commodity / year / "orderbook" / timeframe
+    dir_path = DATA_ROOT / commodity / year / "orderbook" / timeframe
     if not dir_path.exists():
         return None
 
@@ -315,65 +314,4 @@ def validate_data(df: pl.DataFrame) -> bool:
         logger.warning("数据质量验证未通过")
 
     return passed
-
-
-# ==================== 测试代码 ====================
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    test_date = "2023-03-03"
-    print(f"\n{'='*60}")
-    print(f"测试加载单日 orderbook 数据")
-    print(f"日期: {test_date}")
-    print(f"{'='*60}")
-
-    df = load_daily_orderbook_data(test_date)
-    if df is not None:
-        print(f"\n数据预览:")
-        print(df.head())
-        print(f"形状: {df.shape}")
-        print(f"列名: {df.columns}")
-
-        key_cols = [
-            "timestamp", "open_price", "high_price", "low_price", "close_price",
-            "total_trade_volume", "turnover", "open_interest",
-            "bid1_price", "bid1_size", "ask1_price", "ask1_size",
-        ]
-        missing_cols = [col for col in key_cols if col not in df.columns]
-        if missing_cols:
-            print(f"\n警告: 缺少关键列: {missing_cols}")
-        else:
-            print(f"\n所有关键列已加载")
-            print(f"\nOHLCV数据示例:")
-            print(df.select(["timestamp", "open_price", "high_price", "low_price", "close_price"]).head(10))
-            print(f"\n五档数据示例:")
-            print(df.select([
-                "timestamp",
-                "total_trade_volume",
-                "turnover",
-                "open_interest",
-                "bid1_price",
-                "bid1_size",
-                "ask1_price",
-                "ask1_size",
-            ]).head(10))
-
-        print(f"\n{'='*60}")
-        print("数据质量验证")
-        print(f"{'='*60}")
-        validate_data(df)
-
-    print(f"\n{'='*60}")
-    print("测试日期范围数据加载")
-    print(f"{'='*60}")
-    range_df = load_and_merge_date_range("2023-03-03", "2023-04-06")
-    if range_df is not None:
-        print(f"\n日期范围数据预览:")
-        print(range_df.head())
-        print(f"形状: {range_df.shape}")
-        print(f"\nOHLCV数据示例:")
-        print(range_df.select(["timestamp", "date", "contract", "open_price", "high_price", "low_price", "close_price"]).head(10))
-        validate_data(range_df)
+ 
