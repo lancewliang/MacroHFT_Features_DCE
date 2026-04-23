@@ -1458,6 +1458,49 @@ def build_summary(
     return "\n".join(lines) + "\n"
 
 
+def normalize_symbol(symbol: str) -> str:
+    """
+    规范化商品缩写，用于输出目录命名。
+    """
+    value = symbol.strip().lower()
+    if not value:
+        raise ValueError("symbol cannot be empty")
+    return value
+
+
+def infer_symbol_from_path(path: Path) -> str | None:
+    """
+    尝试从路径中推断 output/<symbol>/... 的 symbol。
+    """
+    parts = list(path.parts)
+    lower_parts = [part.lower() for part in parts]
+    if "output" not in lower_parts:
+        return None
+    output_idx = lower_parts.index("output")
+    if output_idx + 1 >= len(parts):
+        return None
+
+    candidate = parts[output_idx + 1].strip().lower()
+    if not candidate or candidate in {"features", "factor_validation"}:
+        return None
+    return candidate
+
+
+def resolve_output_dir(output_dir: Path | None, symbol: str | None, input_path: Path) -> Path:
+    """
+    解析验证报告输出目录，优先级：
+    1) --output-dir
+    2) --symbol
+    3) 从 --input 路径推断 symbol
+    4) 默认 al
+    """
+    if output_dir is not None:
+        return output_dir
+
+    inferred_symbol = symbol or infer_symbol_from_path(input_path) or "al"
+    return Path("output") / normalize_symbol(inferred_symbol) / "factor_validation"
+
+
 def main() -> int:
     """
     主入口：解析命令行参数，依次执行因子有效性验证的完整流程，并将结果写入输出目录。
@@ -1481,8 +1524,10 @@ def main() -> int:
     parser.add_argument("--max-features", type=int, default=50)
     parser.add_argument("--exact-dedup-threshold", type=float, default=0.9999)
     parser.add_argument("--target-count", type=int, default=VP_VAE_TARGET_COUNT)
-    parser.add_argument("--output-dir", type=Path, default=Path("output/factor_validation"))
+    parser.add_argument("--symbol", type=str, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
+    args.output_dir = resolve_output_dir(args.output_dir, args.symbol, args.input)
 
     horizons = parse_horizons(args.horizons)
     df = pl.read_ipc(args.input)

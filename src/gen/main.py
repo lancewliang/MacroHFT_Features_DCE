@@ -261,7 +261,12 @@ def generate_features_single_file(
         logger.info(f"删除了 {rows_before - rows_after} 行关键字段为空的数据")
 
     # 保存最终结果
-    output_path = get_output_filepath(start_date=start_date, end_date=end_date, timeframe=timeframe)
+    output_path = get_output_filepath(
+        start_date=start_date,
+        end_date=end_date,
+        timeframe=timeframe,
+        symbol=symbol,
+    )
     logger.info(f"保存最终结果到: {output_path}")
 
     if OUTPUT_FORMAT == "parquet":
@@ -302,7 +307,7 @@ def main():
     args = parser.parse_args()
 
     # 确保目录存在
-    ensure_directories()
+    ensure_directories(symbol=args.symbol)
 
     # 配置日志
     setup_logging(LOG_FILE, args.log_level)

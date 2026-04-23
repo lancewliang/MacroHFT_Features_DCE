@@ -18,7 +18,6 @@ TIMEFRAME = "30s"
 START_DATE = "2023-01-01"
 END_DATE = "2025-12-31"
 # ==================== 输出配置 ====================
-FEATURES_OUTPUT_DIR = OUTPUT_ROOT / "features"
 OUTPUT_FORMAT = "feather"  # "parquet", "feather", "csv"
 
 # ==================== 处理参数 ====================
@@ -43,10 +42,47 @@ LOG_FILE = LOG_DIR / f"feature_generation_{datetime.now().strftime('%Y%m%d_%H%M%
 # ==================== 性能配置 ====================
 SHOW_PROGRESS = True
 
+def normalize_symbol(symbol: str) -> str:
+    """
+    规范化品种缩写，统一输出目录命名。
+    """
+    symbol_value = (symbol or SYMBOL).strip().lower()
+    if not symbol_value:
+        raise ValueError("symbol 不能为空")
+    return symbol_value
+
+
+def get_symbol_output_root(symbol: str = SYMBOL) -> Path:
+    """
+    获取品种专属输出根目录：output/<symbol>
+    """
+    return OUTPUT_ROOT / normalize_symbol(symbol)
+
+
+def get_features_output_dir(symbol: str = SYMBOL) -> Path:
+    """
+    获取特征输出目录：output/<symbol>/features
+    """
+    return get_symbol_output_root(symbol) / "features"
+
+
+def get_factor_validation_dir(symbol: str = SYMBOL) -> Path:
+    """
+    获取因子验证输出目录：output/<symbol>/factor_validation
+    """
+    return get_symbol_output_root(symbol) / "factor_validation"
+
+
+# 兼容旧逻辑：默认 symbol 的输出目录常量
+FEATURES_OUTPUT_DIR = get_features_output_dir()
+FACTOR_VALIDATION_DIR = get_factor_validation_dir()
+
+
 def get_output_filepath(date_str: str = None, month_str: str = None,
                         start_date: str = None,
                         end_date: str = None,
                         timeframe: str = None,
+                        symbol: str = SYMBOL,
                         ) -> Path:
     """
     获取输出文件路径
@@ -57,11 +93,13 @@ def get_output_filepath(date_str: str = None, month_str: str = None,
         start_date: 起始日期 'YYYY-MM-DD'
         end_date: 结束日期 'YYYY-MM-DD'
         timeframe: 时间粒度 (例: '30s' 或 '1m')，如果提供则包含在文件名中
+        symbol: 品种缩写 (例: 'al'、'fu')
 
     Returns:
         Path: 输出文件路径
     """
-    FEATURES_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    features_output_dir = get_features_output_dir(symbol)
+    features_output_dir.mkdir(parents=True, exist_ok=True)
 
     tf_suffix = f"_{timeframe}" if timeframe else ""
 
@@ -74,11 +112,11 @@ def get_output_filepath(date_str: str = None, month_str: str = None,
     else:
         filename = f"features{tf_suffix}.{OUTPUT_FORMAT}"
 
-    return FEATURES_OUTPUT_DIR / filename
+    return features_output_dir / filename
 
 
-def ensure_directories():
+def ensure_directories(symbol: str = SYMBOL):
     """确保所有必要的目录存在"""
-    FEATURES_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    get_features_output_dir(symbol).mkdir(parents=True, exist_ok=True)
+    get_factor_validation_dir(symbol).mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-

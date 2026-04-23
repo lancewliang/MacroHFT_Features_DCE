@@ -15,6 +15,6 @@ python src/gen/main.py --commodity 燃料油 --symbol fu --timeframe 30s --start
  
  
 python src/gen/test_results.py 
-python scripts/validate_factor_effectiveness.py --input output/split_20230101_20250101.feather --output-dir output/factor_validation --exact-dedup-threshold 0.9999
-python src/gen/split_features.py --time-column timestamp -i output/features/features_20230101_20260401_30s.feather -r "20230101-20250101,20250101-20250701,20250701-20260301"
+python scripts/validate_factor_effectiveness.py --input output/fu/split_20230101_20250101.feather --output-dir output/fu/factor_validation --exact-dedup-threshold 0.9999
+python src/gen/split_features.py --time-column timestamp -i output/fu/features/features_20230101_20260401_30s.feather -r "20230101-20250101,20250101-20250701,20250701-20260301"
  

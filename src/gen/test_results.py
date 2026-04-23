@@ -10,8 +10,9 @@ from typing import Dict, List, Tuple, Optional
 import sys
 
 from config import (
-    FEATURES_OUTPUT_DIR,
-    OUTPUT_FORMAT,
+    SYMBOL,
+    get_features_output_dir,
+    get_factor_validation_dir,
 )
 from feature_calculator import get_feature_columns
 
@@ -27,14 +28,16 @@ logger = logging.getLogger(__name__)
 class FeatureValidator:
     """特征数据验证器"""
 
-    def __init__(self, file_path: Path):
+    def __init__(self, file_path: Path, report_dir: Optional[Path] = None):
         """
         初始化验证器
 
         Args:
             file_path: 特征数据文件路径
+            report_dir: 报告输出目录
         """
         self.file_path = file_path
+        self.report_dir = report_dir or file_path.parent
         self.df: Optional[pl.DataFrame] = None
         self.validation_results = {}
 
@@ -556,7 +559,8 @@ class FeatureValidator:
         print("\n" + report)
 
         # 保存报告
-        report_path = self.file_path.parent / f"{self.file_path.stem}_validation_report.txt"
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = self.report_dir / f"{self.file_path.stem}_validation_report.txt"
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
         logger.info(f"\n报告已保存到: {report_path}")
@@ -571,7 +575,7 @@ class FeatureValidator:
         return total_issues == 0
 
 
-def find_output_files(output_dir: Path = FEATURES_OUTPUT_DIR) -> List[Path]:
+def find_output_files(output_dir: Optional[Path] = None) -> List[Path]:
     """
     查找输出目录中的所有特征文件
 
@@ -581,6 +585,8 @@ def find_output_files(output_dir: Path = FEATURES_OUTPUT_DIR) -> List[Path]:
     Returns:
         文件路径列表
     """
+    output_dir = output_dir or get_features_output_dir()
+
     if not output_dir.exists():
         logger.error(f"输出目录不存在: {output_dir}")
         return []
@@ -603,27 +609,36 @@ def main():
 
     parser = argparse.ArgumentParser(description='验证特征数据集')
     parser.add_argument('--file', type=str, help='指定要验证的文件路径')
-    parser.add_argument('--dir', type=str, default=str(FEATURES_OUTPUT_DIR),
-                        help='输出目录路径（默认从配置读取）')
+    parser.add_argument('--symbol', type=str, default=SYMBOL,
+                        help=f'品种缩写 (默认: {SYMBOL})')
+    parser.add_argument('--dir', type=str, default=None,
+                        help='特征输出目录路径（默认: output/<symbol>/features）')
+    parser.add_argument('--report-dir', type=str, default=None,
+                        help='验证报告目录（默认: output/<symbol>/factor_validation）')
     parser.add_argument('--all', action='store_true',
                         help='验证目录中的所有文件')
 
     args = parser.parse_args()
+    output_dir = Path(args.dir) if args.dir else get_features_output_dir(args.symbol)
+    report_dir = Path(args.report_dir) if args.report_dir else get_factor_validation_dir(args.symbol)
 
     logger.info("="*80)
     logger.info("特征数据验证工具")
+    logger.info("="*80)
+    logger.info(f"品种缩写: {args.symbol}")
+    logger.info(f"特征目录: {output_dir}")
+    logger.info(f"报告目录: {report_dir}")
     logger.info("="*80)
 
     if args.file:
         # 验证指定文件
         file_path = Path(args.file)
-        validator = FeatureValidator(file_path)
+        validator = FeatureValidator(file_path, report_dir=report_dir)
         success = validator.run_all_checks()
         return 0 if success else 1
 
     elif args.all:
         # 验证所有文件
-        output_dir = Path("output/features")
         logger.info(f"目录 {output_dir}")
         files = find_output_files(output_dir)
 
@@ -639,7 +654,7 @@ def main():
             logger.info(f"验证文件 {i}/{len(files)}: {file_path.name}")
             logger.info(f"{'='*80}")
 
-            validator = FeatureValidator(file_path)
+            validator = FeatureValidator(file_path, report_dir=report_dir)
             if not validator.run_all_checks():
                 all_passed = False
 
@@ -654,7 +669,6 @@ def main():
 
     else:
         # 查找并让用户选择
-        output_dir = Path(args.dir)
         files = find_output_files(output_dir)
 
         if not files:
@@ -669,7 +683,7 @@ def main():
 
         # 验证第一个文件
         logger.info(f"\n验证: {files[0].name}")
-        validator = FeatureValidator(files[0])
+        validator = FeatureValidator(files[0], report_dir=report_dir)
         success = validator.run_all_checks()
 
         return 0 if success else 1
