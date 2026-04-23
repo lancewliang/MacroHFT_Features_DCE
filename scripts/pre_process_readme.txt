@@ -1,7 +1,11 @@
 1. reorganize_dce_data.py 解压文件组织目录
+   python scripts/step1_reorganize_dce_data.py 燃料油
 2. extract_main_contract_data.py  挑选主力合约文件
+   python scripts/step2_extract_main_contract_data.py --commodity 燃料油
 3. preprocess_volume_files.py 期货成交量统计合并分钟级别数据  （暂时没用，不执行）
+   #python scripts/step3_preprocess_volume_files.py --commodity 燃料油
 4 preprocess_order_files.py 5档委托合并分钟级别挂单数据    使用了v2，使用最后一笔快照
+   python scripts/step4_preprocess_order_files_v2.py --commodity 燃料油 --interval 20s
 
 
 

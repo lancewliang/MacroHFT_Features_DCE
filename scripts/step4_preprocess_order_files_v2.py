@@ -84,10 +84,13 @@ data/铝/年份/五档行情数据
 """
 
 import polars as pl
+import argparse
 import os
 import glob
+import re
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
+from pathlib import Path
 
 def process_order_data(input_dir, output_dir, interval="30s"):
     """
@@ -173,7 +176,26 @@ def preprocess_data(df):
     # print(df.columns)
     return df
 
-def aggregate_by_minute(df, interval="10s"):
+def interval_to_seconds(interval):
+    """
+    将间隔字符串转换为秒数。
+
+    支持格式：
+    - 10s / 30s
+    - 1m / 5m
+    - 1h
+    """
+    match = re.fullmatch(r"(\d+)([smh])", interval.strip())
+    if not match:
+        raise ValueError(f"无效间隔格式: {interval}，请使用如 30s / 1m / 1h")
+
+    value = int(match.group(1))
+    unit = match.group(2)
+    unit_to_seconds = {"s": 1, "m": 60, "h": 3600}
+
+    return value * unit_to_seconds[unit]
+
+def aggregate_by_minute(df, interval="30s"):
     """
     按指定间隔聚合数据（polars版本），取窗口内最后一行的价格和委托量
 
@@ -184,14 +206,14 @@ def aggregate_by_minute(df, interval="10s"):
 
     Args:
         df: 预处理后的DataFrame
-        interval: 聚合时间间隔，支持 "30s" 或 "1m"
+        interval: 聚合时间间隔，格式如 "30s"、"1m"、"1h"
 
     Returns:
         聚合后的DataFrame
     """
 
     # 计算连续窗口判断阈值（秒）
-    interval_seconds = {"10s": 10,"20s": 20, "30s": 30, "1m": 60}.get(interval, 30)
+    interval_seconds = interval_to_seconds(interval)
 
     # 提取时间戳（按指定间隔截断）
     df = df.with_columns(
@@ -324,7 +346,7 @@ def process_all_years(base_dir, output_base_dir, num_processes=None, interval="3
         base_dir: 基础数据目录 (data/豆粕/)
         output_base_dir: 输出基础目录
         num_processes: 进程数量，默认为 CPU 核心数
-        interval: 聚合时间间隔，支持 "30s" 或 "1m"
+        interval: 聚合时间间隔，格式如 "30s"、"1m"、"1h"
     """
 
     # 查找所有年份目录
@@ -363,22 +385,73 @@ def process_all_years(base_dir, output_base_dir, num_processes=None, interval="3
 
 def main():
     """主函数"""
+    parser = argparse.ArgumentParser(description="按指定间隔聚合期货五档委托数据")
+    parser.add_argument(
+        "--commodity",
+        type=str,
+        default="铝",
+        help="品种名称（默认：铝，例如：燃料油）"
+    )
+    parser.add_argument(
+        "--interval",
+        type=str,
+        default="30s",
+        help="聚合时间间隔（默认：30s，示例：10s、20s、30s、1m）"
+    )
+    parser.add_argument(
+        "--base-data-dir",
+        type=str,
+        help="输入基础目录（可选，默认：项目目录/data/{品种}）"
+    )
+    parser.add_argument(
+        "--output-base-dir",
+        type=str,
+        help="输出基础目录（可选，默认：与输入基础目录相同）"
+    )
+    parser.add_argument(
+        "--num-processes",
+        type=int,
+        default=None,
+        help="并行进程数（可选，默认自动使用 CPU 核心数）"
+    )
+    args = parser.parse_args()
+
+    try:
+        interval_seconds = interval_to_seconds(args.interval)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    project_root = Path(__file__).resolve().parent.parent
 
     # 设置路径
-    base_data_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
-    output_base_dir = "/home/lanceliang/opt/aiwork/MacroHFT_Features_SH/data/铝"
+    if args.base_data_dir:
+        base_data_dir = args.base_data_dir
+    else:
+        base_data_dir = str(project_root / "data" / args.commodity)
 
-    # 设置聚合间隔："30s" 或 "1m"
-    interval = "30s"
-
-    # 设置进程数量（None 表示使用 CPU 核心数，或手动指定如 4）
-    num_processes = None  # 自动使用 CPU 核心数
+    if args.output_base_dir:
+        output_base_dir = args.output_base_dir
+    else:
+        output_base_dir = base_data_dir
 
     print("开始处理期货五档行情统计数据...")
+    print(f"品种: {args.commodity}")
+    print(f"聚合间隔: {args.interval} ({interval_seconds} 秒)")
     print(f"系统 CPU 核心数: {cpu_count()}")
+    print(f"输入目录: {base_data_dir}")
+    print(f"输出目录: {output_base_dir}")
+
+    if not os.path.exists(base_data_dir):
+        print(f"输入目录不存在: {base_data_dir}")
+        return
 
     # 使用多进程处理所有年份的数据
-    process_all_years(base_data_dir, output_base_dir, num_processes=num_processes, interval=interval)
+    process_all_years(
+        base_data_dir,
+        output_base_dir,
+        num_processes=args.num_processes,
+        interval=args.interval
+    )
 
     print("\n数据处理完成!")
 

@@ -12,8 +12,9 @@
 
 使用方法：
   python scripts/step2_extract_main_contract_data.py
+  python scripts/step2_extract_main_contract_data.py --commodity 燃料油
   python scripts/step2_extract_main_contract_data.py --year 2023
-  python scripts/step2_extract_main_contract_data.py --year 2023 --month 01
+  python scripts/step2_extract_main_contract_data.py --commodity 燃料油 --year 2023 --month 01
 """
 
 import polars as pl
@@ -40,12 +41,15 @@ TARGET_DATA_ROOT = PROJECT_ROOT / "data"
 
 # 各品种的主力合约月份配置
 MAIN_CONTRACT_MONTHS = {
-    "铝": [1,  3,  5,  7,  9,  11]
+    "铝": [1, 3, 5, 7, 9, 11],
+    # 上期所燃料油(FU)合约月份为1-12月
+    "燃料油": list(range(1, 13))
 }
 
 # 品种代码映射
 COMMODITY_SYMBOL_MAP = {
-    "铝": "al"
+    "铝": "al",
+    "燃料油": "fu"
 }
 
 # ==================== 辅助函数 ====================
@@ -112,6 +116,11 @@ def identify_main_contract(
         logger.warning(f"品种 {commodity} 没有配置主力月份")
         return None, {}
 
+    commodity_symbol = COMMODITY_SYMBOL_MAP.get(commodity)
+    if not commodity_symbol:
+        logger.warning(f"品种 {commodity} 没有配置代码映射")
+        return None, {}
+
     # 从期货成交量统计数据识别主力合约
     contracts = get_available_contracts(date_path)
 
@@ -123,6 +132,8 @@ def identify_main_contract(
     main_month_contracts = []
     for contract in contracts:
         if len(contract) >= 4:
+            if not contract.lower().startswith(commodity_symbol.lower()):
+                continue
             try:
                 month = int(contract[-2:])
                 if month in main_months:
@@ -332,7 +343,13 @@ def process_commodity(
 
 # ==================== 主函数 ====================
 def main():
-    parser = argparse.ArgumentParser(description="提取铝主力合约数据")
+    parser = argparse.ArgumentParser(description="提取主力合约数据")
+    parser.add_argument(
+        "--commodity",
+        type=str,
+        default="铝",
+        help="品种名称（默认：铝，例如：燃料油）"
+    )
     parser.add_argument(
         "--year",
         type=str,
@@ -361,9 +378,23 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # 处理铝品种数据
+    if args.commodity not in MAIN_CONTRACT_MONTHS:
+        logger.error(
+            f"不支持的品种: {args.commodity}。"
+            f"已配置品种: {', '.join(sorted(MAIN_CONTRACT_MONTHS.keys()))}"
+        )
+        return
+
+    if args.commodity not in COMMODITY_SYMBOL_MAP:
+        logger.error(
+            f"品种 {args.commodity} 缺少代码映射配置。"
+            f"已配置映射: {', '.join(sorted(COMMODITY_SYMBOL_MAP.keys()))}"
+        )
+        return
+
+    # 处理指定品种数据
     process_commodity(
-        commodity="铝",
+        commodity=args.commodity,
         year=args.year,
         month=args.month,
         volume_threshold=args.threshold

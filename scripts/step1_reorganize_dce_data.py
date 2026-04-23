@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
-重新组织铝数据文件
-将 铝2023-2025 目录中的zip文件解压并重新组织为：品种/年份/月份/ 的结构
+重新组织 DCE 数据文件
+将 {品种}2023-2025 目录中的 zip 文件解压并重新组织为：品种/年份/月份/ 的结构
+
+使用方法：
+  python scripts/step1_reorganize_dce_data.py 燃料油
 """
 
-import os
+import argparse
 import zipfile
-import shutil
 from pathlib import Path
 
-# 品种名称（豆粕的拼音缩写是m）
-variety_name = "铝"
-
-def reorganize_dce_data():
+def reorganize_dce_data(variety_name: str):
     # 源目录和目标目录
     source_dir = Path(f"./data/原始下载/{variety_name}2023-2025")
-    target_base_dir = Path(f"./data/原始下载/{variety_name}")
+    target_base_dir = Path("./data/原始下载")
+    target_variety_dir = target_base_dir / variety_name
 
+    if not source_dir.exists():
+        raise FileNotFoundError(f"源目录不存在: {source_dir}")
 
     # 创建目标基础目录
-    target_base_dir.mkdir(parents=True, exist_ok=True)
+    target_variety_dir.mkdir(parents=True, exist_ok=True)
 
     # 获取所有zip文件
     zip_files = sorted(source_dir.glob("*.zip"))
@@ -37,7 +39,7 @@ def reorganize_dce_data():
         month = filename[4:6]
 
         # 创建目标目录: 品种/年份/月份
-        target_dir = target_base_dir / variety_name / year / month
+        target_dir = target_variety_dir / year / month
         target_dir.mkdir(parents=True, exist_ok=True)
 
         print(f"\n处理 {zip_file.name} -> {variety_name}/{year}/{month}/")
@@ -58,21 +60,30 @@ def reorganize_dce_data():
             print(f"  ✗ 解压失败: {e}")
             continue
 
-    print(f"\n所有文件已重新组织到: {target_base_dir}")
+    print(f"\n所有文件已重新组织到: {target_variety_dir}")
 
     # 显示目录结构概览
     print("\n目录结构预览:")
-    for variety_dir in sorted(target_base_dir.glob("*")):
-        if variety_dir.is_dir():
-            print(f"\n{variety_dir.name}/")
-            for year_dir in sorted(variety_dir.glob("*")):
-                if year_dir.is_dir():
-                    print(f"  {year_dir.name}/")
-                    for month_dir in sorted(year_dir.glob("*")):
-                        if month_dir.is_dir():
-                            file_count = sum(1 for _ in month_dir.rglob("*") if _.is_file())
-                            print(f"    {month_dir.name}/ ({file_count} 个文件)")
+    print(f"\n{variety_name}/")
+    for year_dir in sorted(target_variety_dir.glob("*")):
+        if year_dir.is_dir():
+            print(f"  {year_dir.name}/")
+            for month_dir in sorted(year_dir.glob("*")):
+                if month_dir.is_dir():
+                    file_count = sum(1 for _ in month_dir.rglob("*") if _.is_file())
+                    print(f"    {month_dir.name}/ ({file_count} 个文件)")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="重新组织 DCE 数据文件")
+    parser.add_argument(
+        "variety_name",
+        help="品种名称，例如：燃料油"
+    )
+    args = parser.parse_args()
+
+    reorganize_dce_data(args.variety_name)
 
 
 if __name__ == "__main__":
-    reorganize_dce_data()
+    main()

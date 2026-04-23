@@ -29,7 +29,12 @@ from data_loader import (
     load_and_merge_date_range,
     generate_date_range
 )
-from feature_calculator import calculate_all_features, get_feature_columns
+from feature_calculator import (
+    calculate_all_features,
+    get_feature_columns,
+    ROLLING_WINDOWS,
+    RELATIVE_WINDOWS,
+)
 
 
 def log_pre_drop_data_quality(df: pl.DataFrame, logger: logging.Logger, top_k: int = 20) -> None:
@@ -84,6 +89,52 @@ def log_pre_drop_data_quality(df: pl.DataFrame, logger: logging.Logger, top_k: i
         logger.info(f"预清洗诊断: 包含至少一个 NaN 的行数 = {has_nan_rows} ({has_nan_rows / total_rows:.2%})")
 
  
+def drop_warmup_samples(df: pl.DataFrame, logger: logging.Logger) -> pl.DataFrame:
+    """
+    删除预热样本：按合约剔除前 N 行，其中 N 为当前策略最大滚动窗口。
+    """
+    # 注意：regime 因子内部仍使用 360 窗口（vol_regime_ratio_60_360 等）
+    warmup_window = max(ROLLING_WINDOWS + RELATIVE_WINDOWS + [360])
+    if warmup_window <= 0:
+        return df
+
+    rows_before = len(df)
+    if "contract" in df.columns:
+        df = (
+            df.with_columns(pl.int_range(0, pl.len()).over("contract").alias("_contract_row_idx"))
+            .filter(pl.col("_contract_row_idx") >= warmup_window)
+            .drop("_contract_row_idx")
+        )
+        rows_after = len(df)
+        logger.info(f"按合约剔除预热样本: 每个合约前 {warmup_window} 行，共删除 {rows_before - rows_after} 行")
+        return df
+
+    df = (
+        df.with_row_count("_row_idx")
+        .filter(pl.col("_row_idx") >= warmup_window)
+        .drop("_row_idx")
+    )
+    rows_after = len(df)
+    logger.info(f"按全局剔除预热样本: 前 {warmup_window} 行，共删除 {rows_before - rows_after} 行")
+    return df
+
+
+def drop_rows_with_feature_nulls(df: pl.DataFrame, logger: logging.Logger) -> pl.DataFrame:
+    """
+    预热剔除后，进一步删除仍包含特征空值的样本。
+    """
+    feature_columns = [col for col in get_feature_columns() if col in df.columns]
+    if not feature_columns:
+        logger.warning("未识别到因子列，跳过因子空值剔除")
+        return df
+
+    rows_before = len(df)
+    df = df.drop_nulls(subset=feature_columns)
+    rows_after = len(df)
+    if rows_before > rows_after:
+        logger.info(f"删除了 {rows_before - rows_after} 行仍含因子空值的数据")
+    return df
+
 
 
 def setup_logging(log_file: Optional[Path] = None, level: str = "INFO"):
@@ -177,6 +228,11 @@ def generate_features_single_file(
     features_df = calculate_all_features(all_raw_df)
 
     # 输出 drop 前质量诊断，便于定位删行来源
+    log_pre_drop_data_quality(features_df, logger)
+
+    # 直接剔除预热样本（不做 fill 0）
+    features_df = drop_warmup_samples(features_df, logger)
+    features_df = drop_rows_with_feature_nulls(features_df, logger)
     log_pre_drop_data_quality(features_df, logger)
  
     rows_before = len(features_df)
