@@ -88,11 +88,101 @@ import argparse
 import os
 import glob
 import re
+import traceback
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
-def process_order_data(input_dir, output_dir, interval="30s"):
+def _build_expected_numeric_types():
+    """定义预期的数值列类型。"""
+    expected_types = {
+        "LastPrice": pl.Float64,
+        "Volume": pl.Int64,
+        "Turnover": pl.Float64,
+        "OpenInterest": pl.Int64,
+    }
+    for i in range(1, 6):
+        expected_types[f"BidPrice{i}"] = pl.Float64
+        expected_types[f"BidVolume{i}"] = pl.Int64
+        expected_types[f"AskPrice{i}"] = pl.Float64
+        expected_types[f"AskVolume{i}"] = pl.Int64
+    return expected_types
+
+
+EXPECTED_NUMERIC_TYPES = _build_expected_numeric_types()
+
+
+def _is_string_dtype(dtype):
+    return dtype in (pl.String, pl.Utf8)
+
+
+def debug_schema(df, stage, source_file, debug=False, max_columns=30):
+    """输出DataFrame基础信息，便于定位类型问题。"""
+    if not debug:
+        return
+
+    shown_columns = df.columns[:max_columns]
+    schema_str = ", ".join(f"{col}:{df.schema[col]}" for col in shown_columns)
+    if len(df.columns) > max_columns:
+        schema_str += ", ..."
+    print(
+        f"[DEBUG][{stage}] 文件: {source_file}, 行数: {df.height}, 列数: {len(df.columns)}, schema: {schema_str}"
+    )
+
+
+def coerce_numeric_columns(df, source_file, stage, debug=False):
+    """
+    将关键列转换为预期数值类型，并输出类型修正日志。
+
+    这样即使CSV推断出String（例如整列为null），也能避免后续数值比较报错。
+    """
+    for col, target_dtype in EXPECTED_NUMERIC_TYPES.items():
+        if col not in df.columns:
+            continue
+
+        source_dtype = df.schema[col]
+        if source_dtype == target_dtype:
+            continue
+
+        invalid_count = 0
+        invalid_samples = []
+        if _is_string_dtype(source_dtype):
+            invalid_expr = (
+                pl.col(col).is_not_null()
+                & (pl.col(col).str.strip_chars() != "")
+                & pl.col(col).cast(target_dtype, strict=False).is_null()
+            )
+            invalid_count = df.select(invalid_expr.sum().alias("invalid_count")).item()
+            if invalid_count > 0 and debug:
+                invalid_samples = (
+                    df.filter(invalid_expr)
+                    .select(col)
+                    .head(5)
+                    .to_series()
+                    .to_list()
+                )
+
+        nulls_before = df.select(pl.col(col).is_null().sum().alias("nulls_before")).item()
+        df = df.with_columns(pl.col(col).cast(target_dtype, strict=False).alias(col))
+        nulls_after = df.select(pl.col(col).is_null().sum().alias("nulls_after")).item()
+        introduced_nulls = nulls_after - nulls_before
+
+        print(
+            f"[类型修正][{stage}] 文件: {source_file}, 列: {col}, "
+            f"{source_dtype} -> {target_dtype}, 新增空值: {introduced_nulls}"
+        )
+        if invalid_count > 0:
+            print(
+                f"[类型告警][{stage}] 文件: {source_file}, 列: {col}, "
+                f"有 {invalid_count} 个非空值无法转换为 {target_dtype}"
+            )
+            if invalid_samples:
+                print(f"[类型告警][{stage}] 文件: {source_file}, 列: {col}, 异常样例: {invalid_samples}")
+
+    return df
+
+
+def process_order_data(input_dir, output_dir, interval="30s", debug=False):
     """
     处理期货五档行情统计数据（polars版本）
 
@@ -112,17 +202,26 @@ def process_order_data(input_dir, output_dir, interval="30s"):
     print(f"找到 {len(csv_files)} 个CSV文件需要处理")
 
     for csv_file in csv_files:
+        current_step = "初始化"
+        df = None
+        result_df = None
         try:
             print(f"正在处理文件: {os.path.basename(csv_file)}")
 
             # 使用polars读取CSV文件（性能优化）
+            current_step = "读取CSV"
             df = pl.read_csv(csv_file)
+            debug_schema(df, current_step, csv_file, debug=debug)
 
             # 数据预处理
-            df = preprocess_data(df)
+            current_step = "数据预处理"
+            df = preprocess_data(df, source_file=csv_file, debug=debug)
+            debug_schema(df, current_step, csv_file, debug=debug)
 
             # 按指定间隔聚合数据
-            result_df = aggregate_by_minute(df, interval=interval)
+            current_step = "按间隔聚合"
+            result_df = aggregate_by_minute(df, interval=interval, source_file=csv_file, debug=debug)
+            debug_schema(result_df, current_step, csv_file, debug=debug)
 
             # 生成输出文件名（根据间隔命名，如 _30s.csv 或 _1m.csv）
             suffix = interval.replace("s", "s").replace("m", "m")
@@ -130,6 +229,7 @@ def process_order_data(input_dir, output_dir, interval="30s"):
             output_path = os.path.join(output_dir, output_filename)
 
             # 过滤 open/high/low/close 全为 null 的行后保存
+            current_step = "结果过滤与写出"
             result_df = result_df.filter(
                 ~pl.all_horizontal(
                     pl.col("open_price").is_null(),
@@ -142,10 +242,16 @@ def process_order_data(input_dir, output_dir, interval="30s"):
             print(f"已保存处理结果: {output_path}")
             # exit(0)
         except Exception as e:
-            print(f"处理文件 {csv_file} 时出错: {str(e)}")
+            print(f"处理文件 {csv_file} 在步骤 [{current_step}] 时出错: {str(e)}")
+            print("详细异常堆栈如下：")
+            print(traceback.format_exc())
+            if df is not None:
+                debug_schema(df, f"{current_step}-失败时输入", csv_file, debug=True, max_columns=50)
+            if result_df is not None:
+                debug_schema(result_df, f"{current_step}-失败时输出", csv_file, debug=True, max_columns=50)
             continue
 
-def preprocess_data(df):
+def preprocess_data(df, source_file="", debug=False):
     """
     数据预处理（polars版本）
 
@@ -172,6 +278,9 @@ def preprocess_data(df):
 
     # 过滤无效的时间数据并排序
     df = df.filter(pl.col("datetime").is_not_null()).sort("datetime")
+
+    # 修正关键数值列类型，避免 String 与 Float 比较报错
+    df = coerce_numeric_columns(df, source_file=source_file, stage="preprocess_data", debug=debug)
     # 打印所有的列名字
     # print(df.columns)
     return df
@@ -195,7 +304,7 @@ def interval_to_seconds(interval):
 
     return value * unit_to_seconds[unit]
 
-def aggregate_by_minute(df, interval="30s"):
+def aggregate_by_minute(df, interval="30s", source_file="", debug=False):
     """
     按指定间隔聚合数据（polars版本），取窗口内最后一行的价格和委托量
 
@@ -214,6 +323,9 @@ def aggregate_by_minute(df, interval="30s"):
 
     # 计算连续窗口判断阈值（秒）
     interval_seconds = interval_to_seconds(interval)
+
+    # 再次兜底类型修正，确保窗口极值计算参与列均为数值类型
+    df = coerce_numeric_columns(df, source_file=source_file, stage="aggregate_by_minute", debug=debug)
 
     # 提取时间戳（按指定间隔截断）
     df = df.with_columns(
@@ -316,7 +428,7 @@ def process_single_year(args):
     Returns:
         处理结果的元组 (year_name, success, message)
     """
-    year_dir, output_base_dir, interval = args
+    year_dir, output_base_dir, interval, debug = args
     year_name = os.path.basename(year_dir)
     order_dir = os.path.join(year_dir)
 
@@ -328,7 +440,7 @@ def process_single_year(args):
             output_dir = os.path.join(output_base_dir, year_name, "orderbook", interval)
 
             # 处理该年份的数据
-            process_order_data(order_dir, output_dir, interval=interval)
+            process_order_data(order_dir, output_dir, interval=interval, debug=debug)
 
             print(f"[进程 {os.getpid()}] 完成处理年份: {year_name}")
             return (year_name, True, "成功")
@@ -338,7 +450,7 @@ def process_single_year(args):
         return (year_name, False, f"处理失败: {str(e)}")
 
 
-def process_all_years(base_dir, output_base_dir, num_processes=None, interval="30s"):
+def process_all_years(base_dir, output_base_dir, num_processes=None, interval="30s", debug=False):
     """
     使用多进程并行处理所有年份的数据
 
@@ -358,7 +470,7 @@ def process_all_years(base_dir, output_base_dir, num_processes=None, interval="3
         return
 
     # 准备参数列表（含 interval）
-    year_args = [(year_dir, output_base_dir, interval) for year_dir in year_dirs]
+    year_args = [(year_dir, output_base_dir, interval, debug) for year_dir in year_dirs]
 
     # 确定进程数量
     if num_processes is None:
@@ -414,6 +526,11 @@ def main():
         default=None,
         help="并行进程数（可选，默认自动使用 CPU 核心数）"
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="打印详细调试日志（字段类型、类型修正、异常堆栈）"
+    )
     args = parser.parse_args()
 
     try:
@@ -440,6 +557,7 @@ def main():
     print(f"系统 CPU 核心数: {cpu_count()}")
     print(f"输入目录: {base_data_dir}")
     print(f"输出目录: {output_base_dir}")
+    print(f"调试模式: {'开启' if args.debug else '关闭'}")
 
     if not os.path.exists(base_data_dir):
         print(f"输入目录不存在: {base_data_dir}")
@@ -450,7 +568,8 @@ def main():
         base_data_dir,
         output_base_dir,
         num_processes=args.num_processes,
-        interval=args.interval
+        interval=args.interval,
+        debug=args.debug
     )
 
     print("\n数据处理完成!")
