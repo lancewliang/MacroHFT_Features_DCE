@@ -16,6 +16,8 @@ from config import (
     START_DATE,
     END_DATE,
     BATCH_SIZE_DAYS,
+    COMMODITY,
+    SYMBOL,
     OUTPUT_FORMAT,
     LOG_LEVEL,
     LOG_FILE,
@@ -171,6 +173,8 @@ def generate_features_single_file(
     end_date: str,
     batch_size: int = BATCH_SIZE_DAYS,
     timeframe: str = TIMEFRAME,
+    commodity: str = COMMODITY,
+    symbol: str = SYMBOL,
 ) -> bool:
     """
     生成单个特征文件（分批处理后合并）
@@ -180,12 +184,17 @@ def generate_features_single_file(
         end_date: 结束日期
         batch_size: 批处理大小（天数）
         timeframe: 时间粒度，如 '30s' 或 '1m'
+        commodity: 品种名称，如 '铝' 或 '燃料油'
+        symbol: 品种英文符号前缀，如 'al' 或 'fu'
 
     Returns:
         是否成功
     """
     logger = logging.getLogger(__name__)
-    logger.info(f"使用单文件策略生成特征 (timeframe={timeframe})")
+    logger.info(
+        f"使用单文件策略生成特征 "
+        f"(commodity={commodity}, symbol={symbol}, timeframe={timeframe})"
+    )
 
     # 生成日期范围
     all_dates = generate_date_range(start_date, end_date)
@@ -206,7 +215,13 @@ def generate_features_single_file(
         logger.info(f"\n加载批次 {batch_num}/{total_batches}: {batch_start} 至 {batch_end}")
 
         try:
-            merged_df = load_and_merge_date_range(batch_start, batch_end, timeframe=timeframe)
+            merged_df = load_and_merge_date_range(
+                batch_start,
+                batch_end,
+                commodity=commodity,
+                timeframe=timeframe,
+                symbol=symbol,
+            )
             if merged_df is None:
                 logger.warning(f"批次 {batch_num} 数据加载失败，跳过")
                 continue
@@ -274,8 +289,12 @@ def main():
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE_DAYS,
                         help=f'批处理大小（天数） (默认: {BATCH_SIZE_DAYS})')
     parser.add_argument('--timeframe', type=str, default=TIMEFRAME,
-                        choices=['10s','30s', '1m'],
+                        choices=['10s','20s','30s', '1m'],
                         help=f'时间粒度 (默认: {TIMEFRAME})')
+    parser.add_argument('--commodity', type=str, default=COMMODITY,
+                        help=f'品种名称 (默认: {COMMODITY})')
+    parser.add_argument('--symbol', type=str, default=SYMBOL,
+                        help=f'品种英文符号前缀 (默认: {SYMBOL})')
     parser.add_argument('--log-level', type=str, default=LOG_LEVEL,
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         help=f'日志级别 (默认: {LOG_LEVEL})')
@@ -295,6 +314,8 @@ def main():
     logger.info("="*80)
     logger.info(f"起始日期: {args.start_date}")
     logger.info(f"结束日期: {args.end_date}")
+    logger.info(f"品种: {args.commodity}")
+    logger.info(f"品种符号: {args.symbol}")
     logger.info(f"时间粒度: {args.timeframe}")
     logger.info(f"输出策略: {args.strategy}")
     logger.info(f"批处理大小: {args.batch_size} 天")
@@ -311,10 +332,12 @@ def main():
     try:
          
         success = generate_features_single_file(
-            args.start_date,
-            args.end_date,
-            args.batch_size,
-            args.timeframe,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            batch_size=args.batch_size,
+            timeframe=args.timeframe,
+            commodity=args.commodity,
+            symbol=args.symbol,
         )
         if success:
             logger.info("\n单文件生成成功")
