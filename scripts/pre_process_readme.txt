@@ -13,8 +13,11 @@ python src/gen/main.py --commodity 燃料油 --symbol fu --timeframe 20s --start
 python src/gen/main.py --commodity 燃料油 --symbol fu --timeframe 30s --start-date 2023-01-01 --end-date 2023-12-31
 
  
- 
-python src/gen/test_results.py 
-python scripts/validate_factor_effectiveness.py --input output/fu/split_20230101_20250101.feather --output-dir output/fu/factor_validation --exact-dedup-threshold 0.9999
-python src/gen/split_features.py --time-column timestamp -i output/fu/features/features_20230101_20260401_30s.feather -r "20230101-20250101,20250101-20250701,20250701-20260301"
- 
+6 校验 fu 目录下所有生成文件
+python src/gen/test_results.py --symbol fu --all
+
+7 切割文件
+python src/gen/split_features.py --symbol fu --time-column timestamp -i output/fu/features/features_20230101_20260401_20s.feather -r "20230101-20250101,20250101-20250701,20250701-20260301" -n "df_train,df_val,df_test"
+
+8 检验因子和过滤出最有效的因子
+python scripts/validate_factor_effectiveness.py --input output/fu/df_train.feather --output-dir output/fu/factor_validation --exact-dedup-threshold 0.9999

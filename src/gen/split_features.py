@@ -7,8 +7,10 @@ import polars as pl
 import argparse
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 import logging
+
+from config import SYMBOL, get_symbol_output_root
 
 
 def setup_logging(level: str = "INFO"):
@@ -51,11 +53,52 @@ def parse_date_ranges(ranges_str: str) -> List[Tuple[str, str]]:
     return ranges
 
 
+def normalize_output_filename(filename: str) -> str:
+    """
+    规范化输出文件名：
+    - 支持省略 .feather 后缀
+    - 仅允许文件名，不允许目录路径
+    """
+    normalized = filename.strip()
+    if not normalized:
+        raise ValueError("输出文件名不能为空")
+
+    if "/" in normalized or "\\" in normalized:
+        raise ValueError(f"输出文件名 '{normalized}' 不能包含目录分隔符")
+
+    suffix = Path(normalized).suffix.lower()
+    if not suffix:
+        normalized = f"{normalized}.feather"
+    elif suffix != ".feather":
+        raise ValueError(f"输出文件名 '{normalized}' 必须使用 .feather 后缀")
+
+    return normalized
+
+
+def parse_output_filenames(names_str: str) -> List[str]:
+    """
+    解析输出文件名列表字符串
+
+    Args:
+        names_str: 文件名字符串，格式: "df_train,df_val,df_test"
+
+    Returns:
+        文件名列表（带 .feather 后缀）
+    """
+    filenames = [normalize_output_filename(name) for name in names_str.split(",")]
+
+    if len(set(filenames)) != len(filenames):
+        raise ValueError("输出文件名不能重复")
+
+    return filenames
+
+
 def split_features(
     input_file: Path,
     date_ranges: List[Tuple[str, str]],
     output_dir: Path,
-    time_column: str = "candle_begin_time"
+    time_column: str = "candle_begin_time",
+    output_filenames: Optional[List[str]] = None,
 ) -> None:
     """
     按时间段分割特征文件
@@ -65,6 +108,7 @@ def split_features(
         date_ranges: 日期范围列表 [(start1, end1), (start2, end2), ...]
         output_dir: 输出目录
         time_column: 时间列名称
+        output_filenames: 输出文件名列表，与 date_ranges 一一对应
     """
     logger = logging.getLogger(__name__)
 
@@ -86,7 +130,7 @@ def split_features(
         )
 
     # 按时间段分割
-    for start_date, end_date in date_ranges:
+    for idx, (start_date, end_date) in enumerate(date_ranges):
         logger.info(f"\n处理时间段: {start_date} 至 {end_date}")
 
         # 转换日期字符串为 datetime
@@ -115,7 +159,10 @@ def split_features(
             continue
 
         # 生成输出文件名
-        output_filename = f"split_{start_date}_{end_date}.feather"
+        if output_filenames:
+            output_filename = output_filenames[idx]
+        else:
+            output_filename = f"split_{start_date}_{end_date}.feather"
         output_path = output_dir / output_filename
 
         # 保存文件
@@ -236,12 +283,21 @@ def main():
    python split_features.py -i features_20230101_20251231.feather \\
        -r "20230101-20250131,20250201-20250531,20250601-20251031"
 
-2. 按月自动分割:
-   python split_features.py -i features_20230101_20251231.feather --auto-monthly
+2. 指定商品缩写，默认输出到 output/<symbol>/:
+   python split_features.py -i features_20230101_20251231.feather \\
+       -r "20230101-20250131,20250201-20250531" --symbol fu
 
-3. 指定输出目录:
+3. 按月自动分割:
+   python split_features.py -i features_20230101_20251231.feather --auto-monthly --symbol fu
+
+4. 指定输出目录:
    python split_features.py -i features_20230101_20251231.feather \\
        -r "20230101-20250131,20250201-20250531" -o ./split_output
+
+5. 指定每个切割文件名:
+   python split_features.py -i features_20230101_20251231.feather \\
+       -r "20230101-20250131,20250201-20250531,20250601-20251031" \\
+       --symbol fu -n "df_train,df_val,df_test"
         """
     )
 
@@ -253,6 +309,13 @@ def main():
     )
 
     parser.add_argument(
+        '--symbol',
+        type=str,
+        default=SYMBOL,
+        help=f'品种缩写 (默认: {SYMBOL})'
+    )
+
+    parser.add_argument(
         '-r', '--ranges',
         type=str,
         help='日期范围，用逗号分隔，格式: "20230101-20250131,20250201-20250531"'
@@ -261,8 +324,15 @@ def main():
     parser.add_argument(
         '-o', '--output-dir',
         type=str,
-        default='./output',
-        help='输出目录 (默认: ./output)'
+        default=None,
+        help='输出目录（默认: output/<symbol>/）'
+    )
+
+    parser.add_argument(
+        '-n', '--output-names',
+        type=str,
+        default=None,
+        help='按 --ranges 指定切割文件名，用逗号分隔并与时间段一一对应；例如: "df_train,df_val,df_test"'
     )
 
     parser.add_argument(
@@ -298,18 +368,23 @@ def main():
         logger.error(f"输入文件不存在: {input_file}")
         return 1
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir) if args.output_dir else get_symbol_output_root(args.symbol)
 
     logger.info("="*80)
     logger.info("特征数据分割工具")
     logger.info("="*80)
     logger.info(f"输入文件: {input_file}")
+    logger.info(f"品种缩写: {args.symbol}")
     logger.info(f"输出目录: {output_dir}")
     logger.info(f"时间列: {args.time_column}")
     logger.info("="*80)
 
     try:
         if args.auto_monthly:
+            if args.output_names:
+                logger.error("--output-names 仅支持与 --ranges 一起使用，--auto-monthly 模式下不可用")
+                return 1
+
             # 自动按月分割
             logger.info("使用自动按月分割模式")
             auto_split_by_months(
@@ -328,15 +403,29 @@ def main():
                 logger.error('格式示例: "20230101-20250131,20250201-20250531"')
                 return 1
 
+            output_filenames = None
+            if args.output_names:
+                output_filenames = parse_output_filenames(args.output_names)
+                if len(output_filenames) != len(date_ranges):
+                    logger.error(
+                        f"--output-names 数量({len(output_filenames)}) 与 "
+                        f"--ranges 时间段数量({len(date_ranges)}) 不一致"
+                    )
+                    return 1
+
             logger.info(f"将分割为 {len(date_ranges)} 个时间段:")
-            for start, end in date_ranges:
-                logger.info(f"  - {start} 至 {end}")
+            for idx, (start, end) in enumerate(date_ranges):
+                if output_filenames:
+                    logger.info(f"  - {start} 至 {end} -> {output_filenames[idx]}")
+                else:
+                    logger.info(f"  - {start} 至 {end}")
 
             split_features(
                 input_file=input_file,
                 date_ranges=date_ranges,
                 output_dir=output_dir,
-                time_column=args.time_column
+                time_column=args.time_column,
+                output_filenames=output_filenames,
             )
         else:
             logger.error("请指定 --ranges 或 --auto-monthly 参数")
